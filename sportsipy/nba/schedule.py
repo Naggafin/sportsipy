@@ -4,7 +4,7 @@ from ..decorators import float_property_decorator, int_property_decorator
 from .constants import (SCHEDULE_SCHEME,
                         SCHEDULE_URL)
 from datetime import datetime
-from pyquery import PyQuery as pq
+from bs4 import BeautifulSoup
 from sportsipy import utils
 from sportsipy.constants import (WIN,
                                  LOSS,

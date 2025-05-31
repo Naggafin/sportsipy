@@ -1,7 +1,7 @@
 import mock
 import pytest
 from flexmock import flexmock
-from pyquery import PyQuery as pq
+from bs4 import BeautifulSoup
 from sportsipy.fb.roster import SquadPlayer, Roster
 from urllib.error import HTTPError
 
@@ -40,7 +40,7 @@ class TestFBRoster:
         self.player = SquadPlayer(None, None)
 
     def test_no_country_returns_none(self):
-        result = self.player._parse_nationality(pq('<tr></tr>'))
+        result = self.player._parse_nationality(BeautifulSoup('<tr></tr>', 'html.parser'))
 
         assert not result
 
@@ -51,7 +51,7 @@ class TestFBRoster:
             self.roster('')
 
     def test_invalid_player_id_returns_none(self):
-        result = self.roster._player_id(pq('<th data-stat="player"></th>'))
+        result = self.roster._player_id(BeautifulSoup('<th data-stat="player"></th>', 'html.parser'))
 
         assert not result
 

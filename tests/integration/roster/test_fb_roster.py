@@ -2,7 +2,7 @@ import mock
 import pandas as pd
 from flexmock import flexmock
 from os import path
-from pyquery import PyQuery as pq
+from bs4 import BeautifulSoup
 from sportsipy.fb.roster import Roster
 
 

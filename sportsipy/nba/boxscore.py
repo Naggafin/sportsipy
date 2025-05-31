@@ -1,7 +1,7 @@
 import pandas as pd
 import re
 from datetime import timedelta
-from pyquery import PyQuery as pq
+from bs4 import BeautifulSoup
 from urllib.error import HTTPError
 from .. import utils
 from ..constants import AWAY, HOME

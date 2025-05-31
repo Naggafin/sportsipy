@@ -2,7 +2,7 @@ import pytest
 from datetime import datetime
 from flexmock import flexmock
 from mock import PropertyMock
-from pyquery import PyQuery as pq
+from bs4 import BeautifulSoup
 from sportsipy import utils
 from sportsipy.constants import (AWAY,
                                  HOME,
@@ -117,7 +117,7 @@ class TestNCAAFSchedule:
 class TestNCAAFScheduleNames:
     def test_non_major_school_returns_name_for_abbreviation(self):
         text = '<td class="left " data-stat="opp_name">Citadel</td>'
-        game_data = pq(text)
+        game_data = BeautifulSoup(text, "html.parser")
 
         flexmock(utils) \
             .should_receive('_parse_field') \
@@ -129,7 +129,7 @@ class TestNCAAFScheduleNames:
 
     def test_non_major_school_returns_non_dI_for_conference(self):
         text = '<td class="left " data-stat="conf_abbr">Non-Major</td>'
-        game_data = pq(text)
+        game_data = BeautifulSoup(text, "html.parser")
 
         game = Game(game_data)
 

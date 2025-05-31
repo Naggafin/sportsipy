@@ -3,7 +3,7 @@ import re
 from datetime import datetime
 from functools import wraps
 from lxml.etree import ParserError, XMLSyntaxError
-from pyquery import PyQuery as pq
+from bs4 import BeautifulSoup
 from urllib.error import HTTPError
 from .. import utils
 from .constants import NATIONALITY, PLAYER_SCHEME, PLAYER_URL, ROSTER_URL

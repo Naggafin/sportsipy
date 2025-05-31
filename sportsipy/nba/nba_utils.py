@@ -1,5 +1,5 @@
 from .constants import PARSING_SCHEME, SEASON_PAGE_URL
-from pyquery import PyQuery as pq
+from bs4 import BeautifulSoup
 from sportsipy import utils
 from urllib.error import HTTPError
 

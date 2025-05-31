@@ -4,7 +4,7 @@ from datetime import datetime
 from flexmock import flexmock
 from mock import patch
 from os import path
-from pyquery import PyQuery as pq
+from bs4 import BeautifulSoup
 from sportsipy import utils
 from sportsipy.constants import AWAY, DRAW
 from sportsipy.fb.schedule import Schedule

@@ -1,5 +1,5 @@
 import re
-from pyquery import PyQuery as pq
+from bs4 import BeautifulSoup
 from urllib.error import HTTPError
 from .. import utils
 from .constants import CFP_RANKINGS_URL, RANKINGS_SCHEME, RANKINGS_URL

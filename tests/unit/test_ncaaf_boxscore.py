@@ -1,7 +1,7 @@
 import pytest
 from flexmock import flexmock
 from mock import patch, PropertyMock
-from pyquery import PyQuery as pq
+from bs4 import BeautifulSoup
 from sportsipy import utils
 from sportsipy.constants import AWAY, HOME
 from sportsipy.ncaaf.boxscore import Boxscore, Boxscores
@@ -282,7 +282,7 @@ class TestNCAAFBoxscore:
         assert self.boxscore.losing_abbr == expected_name
 
     def test_game_summary_with_no_scores_returns_none(self):
-        result = Boxscore(None)._parse_summary(pq(
+        result = Boxscore(None)._parse_summary(BeautifulSoup( , "html.parser")
             """<table class="linescore nohover stats_table no_freeze">
     <tbody>
         <tr>

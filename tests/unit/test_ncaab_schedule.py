@@ -1,7 +1,7 @@
 from datetime import datetime
 from flexmock import flexmock
 from mock import PropertyMock
-from pyquery import PyQuery as pq
+from bs4 import BeautifulSoup
 from sportsipy import utils
 from sportsipy.constants import (AWAY,
                                  CONFERENCE_TOURNAMENT,
@@ -191,14 +191,14 @@ class TestNCAABScheduleNames:
     def test_non_major_school_returns_name_for_abbreviation(self):
         text = ('<td class="left " data-stat="opp_name">'
                 'City College of New York</td>')
-        game_data = pq(text)
+        game_data = BeautifulSoup(text, "html.parser")
 
         game = Game(game_data)
 
         assert game.opponent_abbr == 'City College of New York'
 
     def test_non_major_school_returns_non_dI_for_conference(self):
-        game_data = pq('<td class="left " data-stat="conf_abbr"></td>')
+        game_data = BeautifulSoup('<td class="left " data-stat="conf_abbr"></td>', 'html.parser')
 
         game = Game(game_data)
 

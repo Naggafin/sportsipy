@@ -1,7 +1,7 @@
 from datetime import datetime
 from flexmock import flexmock
 from mock import patch, PropertyMock
-from pyquery import PyQuery as pq
+from bs4 import BeautifulSoup
 from os.path import dirname, join
 from sportsipy import utils
 from sportsipy.constants import AWAY, HOME

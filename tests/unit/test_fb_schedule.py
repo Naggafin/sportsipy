@@ -1,7 +1,7 @@
 import mock
 from datetime import datetime
 from flexmock import flexmock
-from pyquery import PyQuery as pq
+from bs4 import BeautifulSoup
 from sportsipy.constants import (AWAY,
                                  DRAW,
                                  HOME,
@@ -35,7 +35,7 @@ class TestFBSchedule:
     def test_invalid_opponent_id_returns_none(self):
         html = '<td data-stat="opponent"></td>'
 
-        output = self.game._parse_opponent_id(pq(html))
+        output = self.game._parse_opponent_id(BeautifulSoup(html, "html.parser"))
 
         assert not output
 

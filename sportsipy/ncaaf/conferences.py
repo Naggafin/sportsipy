@@ -1,7 +1,7 @@
 import re
 import warnings
 from lxml.etree import ParserError
-from pyquery import PyQuery as pq
+from bs4 import BeautifulSoup
 from urllib.error import HTTPError
 from .. import utils
 from .constants import CONFERENCE_URL, CONFERENCES_URL

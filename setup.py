@@ -21,7 +21,7 @@ setup(
     install_requires=[
         "numpy >= 1.19.5",
         "pandas >= 0.24.1",
-        "pyquery >= 1.4.0",
+        "beautifulsoup4",
         "requests >= 2.18.4"
     ],
     classifiers=(

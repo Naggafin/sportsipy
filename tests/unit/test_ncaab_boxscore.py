@@ -1,6 +1,6 @@
 from flexmock import flexmock
 from mock import patch, PropertyMock
-from pyquery import PyQuery as pq
+from bs4 import BeautifulSoup
 from sportsipy import utils
 from sportsipy.constants import AWAY, HOME
 from sportsipy.ncaab.boxscore import Boxscore, Boxscores
@@ -312,7 +312,7 @@ class TestNCAABBoxscore:
         assert self.boxscore.home_losses == 0
 
     def test_game_summary_with_no_scores_returns_none(self):
-        result = Boxscore(None)._parse_summary(pq(
+        result = Boxscore(None)._parse_summary(BeautifulSoup(
             """<table id="line-score">
     <tbody>
         <tr>

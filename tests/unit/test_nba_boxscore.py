@@ -325,7 +325,7 @@ class TestNBABoxscore:
             self.boxscore.home_two_point_field_goal_percentage, float)
 
     def test_game_summary_with_no_scores_returns_none(self):
-        result = Boxscore(None)._parse_summary(pq(
+        result = Boxscore(None)._parse_summary(BeautifulSoup(
             """<table id="line_score">
     <tbody>
         <tr>
@@ -447,7 +447,7 @@ class TestNBABoxscores:
         assert len(games) == 0
 
     def test_boxscore_with_no_score_returns_none(self):
-        mock_html = pq("""<table class="teams">
+        mock_html = BeautifulSoup("""mock_html = pq("""<table class="teams">lt;table class="teams>"", "html.parser")
 <tbody>
     <tr class="loser">
             <td><a href="/teams/DET/2017.html">Detroit</a></td>

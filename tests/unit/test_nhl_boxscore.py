@@ -1,6 +1,6 @@
 from flexmock import flexmock
 from mock import patch, PropertyMock
-from pyquery import PyQuery as pq
+from bs4 import BeautifulSoup
 from sportsipy import utils
 from sportsipy.constants import AWAY, HOME
 from sportsipy.nhl.boxscore import Boxscore, Boxscores
@@ -501,7 +501,7 @@ Logos via Sports Logos.net / About logos
         assert self.boxscore.dataframe is None
 
     def test_no_players_during_extraction(self):
-        table = pq('<tbody><tr></tr><tr></tr></tbody>')
+        table = BeautifulSoup('<tbody><tr></tr><tr></tr></tbody>', 'html.parser')
         player_dict = self.boxscore._extract_player_stats(table, {}, 'Home')
 
         assert player_dict == {}

@@ -1,7 +1,7 @@
 import pandas as pd
 import re
 from functools import wraps
-from pyquery import PyQuery as pq
+from bs4 import BeautifulSoup
 from .. import utils
 from .constants import PLAYER_SCHEME
 

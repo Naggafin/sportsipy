@@ -1,4 +1,4 @@
-from pyquery import PyQuery as pq
+from bs4 import BeautifulSoup
 from sportsipy import utils
 from .constants import (DEFENSIVE_STATS_URL,
                         OFFENSIVE_STATS_URL,
