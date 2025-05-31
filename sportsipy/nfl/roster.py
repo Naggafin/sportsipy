@@ -2,7 +2,7 @@ import pandas as pd
 import re
 from functools import wraps
 from lxml.etree import ParserError, XMLSyntaxError
-from pyquery import PyQuery as pq
+from bs4 import BeautifulSoup
 from urllib.error import HTTPError
 from .. import utils
 from .constants import PLAYER_SCHEME, PLAYER_URL, ROSTER_URL, DETAILED_STATS
@@ -275,7 +275,7 @@ class Player(AbstractPlayer):
         """
         url = self._build_url()
         try:
-            url_data = pq(url=url)
+            response = requests.get(url); url_data = BeautifulSoup(response.text, 'lxml')
         except (HTTPError, ParserError):
             return None
         # For NFL, a 404 page doesn't actually raise a 404 error, so it needs

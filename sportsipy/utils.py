@@ -148,7 +148,7 @@ def _parse_abbreviation(uri_link):
     string
         The shortened uppercase abbreviation for a given team.
     """
-    abbr = re.sub(r'/[0-9]+\..*htm.*', '', uri_link('a').attr('href'))
+    soup = BeautifulSoup(uri_link, 'lxml'); abbr = re.sub(r'/[0-9]+\..*htm.*', '', soup.find('a')['href'] if soup.find('a') else '')
     abbr = re.sub(r'/.*/schools/', '', abbr)
     abbr = re.sub(r'/teams/', '', abbr)
     return abbr.upper()

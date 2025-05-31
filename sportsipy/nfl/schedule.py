@@ -4,7 +4,7 @@ from ..decorators import float_property_decorator, int_property_decorator
 from .constants import (SCHEDULE_SCHEME,
                         SCHEDULE_URL)
 from datetime import datetime
-from pyquery import PyQuery as pq
+from bs4 import BeautifulSoup
 from sportsipy import utils
 from sportsipy.constants import (WIN,
                                  LOSS,
@@ -109,7 +109,7 @@ class Game:
         game_data : PyQuery object
             A PyQuery object containing the information specific to a game.
         """
-        name = game_data('td[data-stat="opp"]:first')
+        soup = BeautifulSoup(game_data, 'lxml'); name = soup.find('td', attrs={'data-stat': 'opp'}) if soup.find('td', attrs={'data-stat': 'opp'}) else None
         name = re.sub(r'.*/teams/', '', str(name))
         name = re.sub('/.*', '', name).upper()
         setattr(self, '_opponent_abbr', name)
@@ -126,7 +126,7 @@ class Game:
         game_data : PyQuery object
             A PyQuery object containing the information specific to a game.
         """
-        boxscore = game_data('td[data-stat="boxscore_word"]:first')
+        soup = BeautifulSoup(game_data, 'lxml'); boxscore = soup.find('td', attrs={'data-stat': 'boxscore_word'}) if soup.find('td', attrs={'data-stat': 'boxscore_word'}) else None
         boxscore = re.sub(r'.*/boxscores/', '', str(boxscore))
         boxscore = re.sub(r'\.htm.*', '', str(boxscore))
         setattr(self, '_boxscore', boxscore)
