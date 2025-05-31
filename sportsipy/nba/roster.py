@@ -1,169 +1,37 @@
 import pandas as pd
 import re
-import requests
 from datetime import datetime
-from functools import wraps
-from lxml.etree import ParserError, XMLSyntaxError
 from bs4 import BeautifulSoup
 from urllib.error import HTTPError
-from .. import utils
+from ..base import (int_property_decorator, float_property_decorator, 
+                    int_property_decorator_default_zero, most_recent_decorator,
+                    _parse_field, _fetch_html, _parse_attribute, _parse_table_dict,
+                    _aggregate_table_data, _extract_entity_id, _extract_entity_name,
+                    _find_year_for_season, _url_exists, AbstractParser)
 from .constants import NATIONALITY, PLAYER_SCHEME, PLAYER_URL, ROSTER_URL
 from .player import AbstractPlayer
 
+class Player(AbstractPlayer, AbstractParser):
+    """Player information and statistics for all seasons.
 
-def _cleanup(prop):
-    """Remove unwanted characters from a property value and handle None cases.
-
-    Parameters
-    ----------
-    prop : str or None
-        The property value to clean, which may include characters like '%', '$', ',', or '+'.
-
-    Returns
-    -------
-    str
-        The cleaned property value with specified characters removed, or an empty string if prop is None.
-    """
-    try:
-        prop = prop.replace('%', '')
-        prop = prop.replace('$', '')
-        prop = prop.replace(',', '')
-        return prop.replace('+', '')
-    except AttributeError:
-        return ''
-
-
-def _int_property_decorator(func):
-    """Convert a property to an integer, returning None if conversion fails.
-
-    Parameters
-    ----------
-    func : callable
-        The function to decorate, which retrieves a property value.
-
-    Returns
-    -------
-    callable
-        A wrapped property that converts the function's output to an integer.
-    """
-    @property
-    @wraps(func)
-    def wrapper(*args):
-        index = args[0]._index
-        prop = func(*args)
-        try:
-            value = _cleanup(prop[index])
-            return int(value)
-        except (TypeError, ValueError):
-            return None
-    return wrapper
-
-
-def _int_property_decorator_default_zero(func):
-    """Convert a property to an integer, returning 0 if conversion fails.
-
-    Parameters
-    ----------
-    func : callable
-        The function to decorate, which retrieves a property value.
-
-    Returns
-    -------
-    callable
-        A wrapped property that converts the function's output to an integer, defaulting to 0.
-    """
-    @property
-    @wraps(func)
-    def wrapper(*args):
-        index = args[0]._index
-        prop = func(*args)
-        try:
-            value = _cleanup(prop[index])
-            return int(value)
-        except (TypeError, ValueError):
-            return 0
-    return wrapper
-
-
-def _float_property_decorator(func):
-    """Convert a property to a float, returning None if conversion fails.
-
-    Parameters
-    ----------
-    func : callable
-        The function to decorate, which retrieves a property value.
-
-    Returns
-    -------
-    callable
-        A wrapped property that converts the function's output to a float.
-    """
-    @property
-    @wraps(func)
-    def wrapper(*args):
-        index = args[0]._index
-        prop = func(*args)
-        try:
-            value = _cleanup(prop[index])
-            return float(value)
-        except (TypeError, ValueError):
-            return None
-    return wrapper
-
-
-def _most_recent_decorator(func):
-    """Return the property value for the most recent season.
-
-    Parameters
-    ----------
-    func : callable
-        The function to decorate, which retrieves a property value.
-
-    Returns
-    -------
-    callable
-        A wrapped property that returns the value for the most recent season.
-    """
-    @property
-    @wraps(func)
-    def wrapper(*args):
-        season = args[0]._most_recent_season
-        seasons = args[0]._season
-        index = seasons.index(season)
-        prop = func(*args)
-        return prop[index]
-    return wrapper
-
-
-class Player(AbstractPlayer):
-    """Get player information and stats for all seasons.
-
-    Given a player ID, such as 'hardeja01' for James Harden, capture all
-    relevant stats and information like name, nationality, height/weight,
-    career three-pointers, last season's offensive rebounds, salary, contract
-    amount, and much more.
-
-    By default, the class instance will return the player's career stats, but
-    single-season stats can be found by calling the instance with the requested
-    season as denoted on basketball-reference.com.
+    Retrieves and stores comprehensive player data, including personal details
+    (name, nationality, height, weight) and season/career statistics (e.g., points,
+    rebounds, advanced metrics) for a given player ID from basketball-reference.com.
+    By default, returns career stats; call the instance with a season (e.g., '2017-18')
+    to access specific season stats.
 
     Parameters
     ----------
     player_id : str
-        A player's ID according to basketball-reference.com, such as
-        'hardeja01' for James Harden. The player ID can be found by navigating
-        to the player's stats page and getting the string between the final
-        slash and the '.html' in the URL. In general, the ID is in the format
-        'LLLLLFFNN' where 'LLLLL' are the first 5 letters in the player's last
-        name, 'FF', are the first 2 letters in the player's first name, and
-        'NN' is a number starting at '01' for the first time that player ID has
-        been used and increments by 1 for every successive player.
+        The player's ID (e.g., 'hardeja01' for James Harden), typically in the format
+        'LLLLLFFNN' where 'LLLLL' are the first 5 letters of the last name, 'FF' are
+        the first 2 letters of the first name, and 'NN' is a number starting at '01'.
     """
     def __init__(self, player_id):
         self._most_recent_season = ''
-        self._index = None
+        self._index = 0
         self._player_id = player_id
-        self._season = None
+        self._season = []
         self._name = None
         self._team_abbreviation = None
         self._position = None
@@ -240,359 +108,138 @@ class Player(AbstractPlayer):
         self._points_per_poss = None
 
         player_data = self._pull_player_data()
+        AbstractParser.__init__(self, player_data.get('Career', {}).get('data', ''))
         AbstractPlayer.__init__(self, player_id, self._name, player_data)
-        if not player_data:
-            return
-        self._find_initial_index()
+        if player_data:
+            self._season = list(player_data.keys())
+            self._find_initial_index()
 
     def __str__(self):
-        """Return the string representation of the class.
+        """Return the string representation of the player.
 
         Returns
         -------
         str
-            A string containing the player's name and ID, e.g., 'James Harden (hardeja01)'.
+            The player's name and ID (e.g., 'James Harden (hardeja01)').
         """
         return f'{self.name} ({self.player_id})'
 
     def __repr__(self):
-        """Return the string representation of the class.
+        """Return the string representation of the player.
 
         Returns
         -------
         str
-            A string containing the player's name and ID, e.g., 'James Harden (hardeja01)'.
+            The player's name and ID (e.g., 'James Harden (hardeja01)').
         """
         return self.__str__()
 
     def _build_url(self):
-        """Create the player's URL to pull stats from.
-
-        The player's URL requires the first letter of the player's last name
-        followed by the player ID.
+        """Build the player's stats page URL.
 
         Returns
         -------
         str
-            The string URL for the player's stats page.
+            The URL for the player's stats page, using the first letter of the player ID.
         """
-        first_character = self._player_id[0]
-        return PLAYER_URL % (first_character, self._player_id)
-
-    def _retrieve_html_page(self):
-        """Download the requested player's stats page.
-
-        Download the requested page and strip all comment tags before
-        returning a BeautifulSoup object for parsing the data.
-
-        Returns
-        -------
-        BeautifulSoup object
-            The requested page as a BeautifulSoup object with comment tags removed.
-        """
-        url = self._build_url()
-        try:
-            response = requests.get(url)
-            response.raise_for_status()
-            soup = BeautifulSoup(utils._remove_html_comment_tags(response.text), 'html.parser')
-            return soup
-        except (HTTPError, requests.RequestException):
-            return None
+        return PLAYER_URL % (self._player_id[0], self._player_id)
 
     def _parse_season(self, row):
-        """Parse the season string from the table.
-
-        The season is generally located in the first column of the stats tables
-        and should be parsed to denote which season metrics are being pulled
-        from.
+        """Parse the season from a stats table row.
 
         Parameters
         ----------
         row : BeautifulSoup object
-            A BeautifulSoup object of a single row in a stats table.
+            A table row containing stats.
 
         Returns
         -------
         str
-            A string representation of the season in the format 'YYYY-YY', such
-            as '2017-18'.
+            The season in 'YYYY-YY' format (e.g., '2017-18').
         """
-        return utils._parse_field(PLAYER_SCHEME, row, 'season')
+        return _parse_field(PLAYER_SCHEME, row, 'season')
 
-    def _combine_season_stats(self, table_rows, career_stats, all_stats_dict):
-        """Combine all stats for each season.
-
-        Since all stats are spread across multiple tables, they should
-        be combined into a single field which can be used to easily query stats
-        at once.
+    def _combine_stats(self, stats_dict, season, row_data):
+        """Combine stats for a season.
 
         Parameters
         ----------
-        table_rows : list
-            A list where each element is a row in a stats table.
-        career_stats : list
-            A list where each element is a row in the footer of a stats
-            table. Career stats are kept in the footer, hence the usage.
-        all_stats_dict : dict
-            A dictionary of all stats separated by season where each key is the
-            season string, such as '2017-18', and the value is a dictionary
-            with a 'data' key containing all row data.
+        stats_dict : dict
+            Dictionary of stats by season.
+        season : str
+            The season to add stats for.
+        row_data : str
+            The HTML row data to append.
 
         Returns
         -------
         dict
-            An updated version of all_stats_dict including metrics from the provided table.
+            Updated stats dictionary.
         """
-        most_recent_season = self._most_recent_season
-        if not table_rows:
-            table_rows = []
-        for row in table_rows:
-            season = self._parse_season(row)
-            try:
-                all_stats_dict[season]['data'] += str(row)
-            except KeyError:
-                all_stats_dict[season] = {'data': str(row)}
-            most_recent_season = season
-        self._most_recent_season = most_recent_season
-        if not career_stats:
-            return all_stats_dict
-        try:
-            all_stats_dict['Career']['data'] += str(next(iter(career_stats)))
-        except KeyError:
-            all_stats_dict['Career'] = {'data': str(next(iter(career_stats)))}
-        return all_stats_dict
-
-    def _combine_all_stats(self, player_info):
-        """Pull stats from all tables into a single data structure.
-
-        Pull stats from requested tables into a dictionary separated by season
-        for easy querying of player stats for each season.
-
-        Parameters
-        ----------
-        player_info : BeautifulSoup object
-            A BeautifulSoup object containing all stats information for the player.
-
-        Returns
-        -------
-        dict
-            A dictionary where stats from each table are combined by season.
-        """
-        all_stats_dict = {}
-        for table_id in ['totals', 'per_poss', 'advanced', 'shooting', 'advanced_pbp', 'all_salaries']:
-            table_items = utils._get_stats_table(player_info, f'table#{table_id}')
-            career_items = utils._get_stats_table(player_info, f'table#{table_id}', footer=True)
-            all_stats_dict = self._combine_season_stats(table_items, career_items, all_stats_dict)
-        return all_stats_dict
-
-    def _parse_nationality(self, player_info):
-        """Parse the player's nationality.
-
-        The player's nationality is denoted by a flag in the information
-        section with a country code. The code is matched to find the player's
-        home country and set the '_nationality' attribute.
-
-        Parameters
-        ----------
-        player_info : BeautifulSoup object
-            A BeautifulSoup object containing the HTML from the player's stats page.
-        """
-        for span in player_info.find_all('span'):
-            if 'f-i' in span.get('class', []):
-                nationality = span.text
-                nationality = NATIONALITY.get(nationality, nationality)
-                setattr(self, '_nationality', nationality)
-                break
-
-    def _parse_player_information(self, player_info):
-        """Parse general player information.
-
-        Parse general player information such as height, weight, and name. The
-        attribute for the requested field will be set with the value.
-
-        Parameters
-        ----------
-        player_info : BeautifulSoup object
-            A BeautifulSoup object containing the HTML from the player's stats page.
-        """
-        for field in ['_height', '_weight', '_name']:
-            short_field = str(field)[1:]
-            value = utils._parse_field(PLAYER_SCHEME, player_info, short_field)
-            setattr(self, field, value)
-
-    def _parse_birth_date(self, player_info):
-        """Parse the player's birth date.
-
-        Pull the player's birth date from the player information and set the
-        '_birth_date' attribute.
-
-        Parameters
-        ----------
-        player_info : BeautifulSoup object
-            A BeautifulSoup object containing the HTML from the player's stats page.
-        """
-        span = player_info.find('span', itemprop='birthDate')
-        if span:
-            date = span.get('data-birth')
-            if date:
-                setattr(self, '_birth_date', date)
-
-    def _parse_contract_headers(self, table):
-        """Parse the years on the contract.
-
-        The years are listed as headers on the contract table. The first header
-        contains 'Team' and should not be included in the years.
-
-        Parameters
-        ----------
-        table : BeautifulSoup object
-            A BeautifulSoup object containing the contract table.
-
-        Returns
-        -------
-        list
-            A list where each element is a string denoting the season, such as '2017-18'.
-        """
-        years = [th.text for th in table.find_all('th')]
-        years.remove('Team')
-        return years
-
-    def _parse_contract_wages(self, table):
-        """Parse the wages on the contract.
-
-        The wages are listed as data points in the contract table. Values not
-        starting with a '$' are dropped as they are likely invalid.
-
-        Parameters
-        ----------
-        table : BeautifulSoup object
-            A BeautifulSoup object containing the contract table.
-
-        Returns
-        -------
-        list
-            A list of wages where each element is a string, such as '$40,000,000'.
-        """
-        wages = [td.text if td.text.startswith('$') else '' for td in table.find_all('td')]
-        wages = [w for w in wages if w]
-        return wages
-
-    def _combine_contract(self, years, wages):
-        """Combine contract wages and years.
-
-        Match wages with years and add to a dictionary representing the player's contract.
-
-        Parameters
-        ----------
-        years : list
-            A list where each element is a string denoting the season, such as '2017-18'.
-        wages : list
-            A list of wages where each element is a string, such as '$40,000,000'.
-
-        Returns
-        -------
-        dict
-            A dictionary where each key is a season string and each value is the wage string.
-        """
-        contract = {}
-        for i in range(len(years)):
-            contract[years[i]] = wages[i]
-        return contract
-
-    def _parse_contract(self, player_info):
-        """Parse the player's contract.
-
-        If a contract table exists, create a dictionary of wages by season.
-
-        Parameters
-        ----------
-        player_info : BeautifulSoup object
-            A BeautifulSoup object containing the HTML from the player's stats page.
-        """
-        for table in player_info.find_all('table'):
-            id_attr = table.get('id')
-            if id_attr and id_attr.startswith('contracts_'):
-                years = self._parse_contract_headers(table)
-                wages = self._parse_contract_wages(table)
-                contract = self._combine_contract(years, wages)
-                if not contract:
-                    contract = None
-                setattr(self, '_contract', contract)
-                break
+        if season in stats_dict:
+            stats_dict[season]['data'] += row_data
+        else:
+            stats_dict[season] = {'data': row_data}
+        return stats_dict
 
     def _pull_player_data(self):
-        """Pull and aggregate all player information.
-
-        Pull the player's HTML stats page and parse unique properties, such as
-        height, weight, and position. Combine all stats for all seasons plus
-        career stats into a single object.
+        """Pull and aggregate player data.
 
         Returns
         -------
         dict
-            A dictionary of combined stats where each key is a season string
-            and the value is the season's stats.
+            A dictionary of stats by season, or None if data cannot be retrieved.
         """
-        player_info = self._retrieve_html_page()
+        url = self._build_url()
+        player_info = _fetch_html(url)
         if not player_info:
-            return
-        self._parse_player_information(player_info)
-        self._parse_nationality(player_info)
-        self._parse_birth_date(player_info)
-        self._parse_contract(player_info)
-        all_stats = self._combine_all_stats(player_info)
-        setattr(self, '_season', all_stats.keys())
+            return None
+        self._name = _parse_field(PLAYER_SCHEME, player_info, 'name')
+        self._height = _parse_field(PLAYER_SCHEME, player_info, 'height')
+        self._weight = _parse_field(PLAYER_SCHEME, player_info, 'weight')
+        self._nationality = _parse_attribute(player_info, 'span.f-i', mapping=NATIONALITY)
+        self._birth_date = _parse_attribute(player_info, 'span[itemprop="birthDate"]', attr='data-birth')
+        self._contract = _parse_table_dict(player_info, 'table[id^="contracts_"]')
+        table_ids = ['totals', 'per_poss', 'advanced', 'shooting', 'advanced_pbp', 'all_salaries']
+        all_stats, self._most_recent_season = _aggregate_table_data(player_info, table_ids, self._parse_season, self._combine_stats)
         return all_stats
 
     def _find_initial_index(self):
-        """Find the index of career stats.
-
-        Set the index to the 'Career' element when the Player class is instantiated.
-        """
-        index = 0
-        for season in self._season:
-            if season == 'Career':
-                self._index = index
-                break
-            index += 1
+        """Set the index to career stats."""
+        try:
+            self._index = self._season.index('Career')
+        except ValueError:
+            self._index = 0
 
     def __call__(self, requested_season=''):
-        """Specify a different season to pull stats from.
+        """Switch to stats for a specific season.
 
         Parameters
         ----------
         requested_season : str, optional
-            A string of the requested season, such as '2017-18'. If blank or
-            'Career', career stats are used. Defaults to ''.
+            The season to retrieve stats for (e.g., '2017-18'). Defaults to 'Career'.
 
         Returns
         -------
         Player
-            The class instance with updated stats reference.
+            The instance with updated season index.
         """
-        if requested_season.lower() == 'career' or requested_season == '':
-            requested_season = 'Career'
-        index = 0
-        for season in self._season:
-            if season == requested_season:
-                self._index = index
-                break
-            index += 1
+        season = 'Career' if requested_season.lower() in ('career', '') else requested_season
+        try:
+            self._index = self._season.index(season)
+        except ValueError:
+            pass
         return self
 
     def _dataframe_fields(self):
         """Create a dictionary of fields for DataFrame.
 
-        Regenerate the dictionary when the index changes to reflect the current
-        season's stats.
-
         Returns
         -------
         dict
-            A dictionary where keys are attribute names and values are attribute values
-            for the specified index.
+            A dictionary of attribute names and values for the current season.
         """
-        fields_to_include = {
+        return {
             'and_ones': self.and_ones,
             'assist_percentage': self.assist_percentage,
             'assists': self.assists,
@@ -700,17 +347,15 @@ class Player(AbstractPlayer):
             'win_shares': self.win_shares,
             'win_shares_per_48_minutes': self.win_shares_per_48_minutes
         }
-        return fields_to_include
 
     @property
     def dataframe(self):
-        """Return a pandas DataFrame of all seasons' stats.
+        """Return a pandas DataFrame of all seasons' statistics.
 
         Returns
         -------
         pandas.DataFrame
-            A DataFrame containing all class properties where each index is a
-            different season plus career stats.
+            A DataFrame with stats for each season, indexed by season ID.
         """
         temp_index = self._index
         rows = []
@@ -720,19 +365,18 @@ class Player(AbstractPlayer):
             rows.append(self._dataframe_fields())
             indices.append(season)
         self._index = temp_index
-        return pd.DataFrame(rows, index=[indices])
+        return pd.DataFrame(rows, index=indices)
 
     @property
     def season(self):
-        """Return the current season string.
+        """Return the current season.
 
         Returns
         -------
         str
-            The season in 'YYYY-YY' format, such as '2017-18', or 'Career' if
-            no season is specified.
+            The season in 'YYYY-YY' format or 'Career'.
         """
-        return self._season[self._index]
+        return self._season[self._index] if self._season else ''
 
     @property
     def team_abbreviation(self):
@@ -740,19 +384,19 @@ class Player(AbstractPlayer):
 
         Returns
         -------
-        str
-            The abbreviation for the team the player plays for, e.g., 'HOU' for Houston Rockets.
+        str or None
+            The team's abbreviation (e.g., 'HOU').
         """
-        return self._team_abbreviation[self._index]
+        return self._team_abbreviation[self._index] if self._team_abbreviation else None
 
-    @_most_recent_decorator
+    @most_recent_decorator
     def position(self):
         """Return the player's primary position.
 
         Returns
         -------
-        str
-            A constant representing the player's primary position for the most recent season.
+        str or None
+            The player's primary position for the most recent season.
         """
         return self._position
 
@@ -762,8 +406,8 @@ class Player(AbstractPlayer):
 
         Returns
         -------
-        str
-            The player's height in the format 'feet-inches'.
+        str or None
+            The player's height (e.g., '6-10').
         """
         return self._height
 
@@ -774,7 +418,7 @@ class Player(AbstractPlayer):
         Returns
         -------
         int or None
-            The player's weight in pounds, or None if not available.
+            The player's weight in pounds.
         """
         try:
             return int(self._weight.replace('lb', ''))
@@ -787,10 +431,13 @@ class Player(AbstractPlayer):
 
         Returns
         -------
-        datetime
-            A datetime object of the player's birth date.
+        datetime or None
+            The player's birth date.
         """
-        return datetime.strptime(self._birth_date, '%Y-%m-%d')
+        try:
+            return datetime.strptime(self._birth_date, '%Y-%m-%d')
+        except (ValueError, TypeError):
+            return None
 
     @property
     def nationality(self):
@@ -798,797 +445,791 @@ class Player(AbstractPlayer):
 
         Returns
         -------
-        str
-            A constant denoting the player's country of origin.
+        str or None
+            The player's country of origin.
         """
         return self._nationality
 
-    @_int_property_decorator
+    @int_property_decorator
     def games_played(self):
         """Return the number of games played.
 
         Returns
         -------
-        int
-            The number of games the player participated in.
+        int or None
+            The number of games played.
         """
         return self._games_played
 
-    @_int_property_decorator
+    @int_property_decorator
     def games_started(self):
         """Return the number of games started.
 
         Returns
         -------
-        int
-            The number of games the player started.
+        int or None
+            The number of games started.
         """
         return self._games_started
 
-    @_float_property_decorator
+    @float_property_decorator
     def field_goals_per_poss(self):
         """Return field goals per 100 possessions.
 
         Returns
         -------
-        float
-            The total number of field goals scored per 100 possessions.
+        float or None
+            Field goals per 100 possessions.
         """
         return self._field_goals_per_poss
 
-    @_float_property_decorator
+    @float_property_decorator
     def field_goal_attempts_per_poss(self):
         """Return field goal attempts per 100 possessions.
 
         Returns
         -------
-        float
-            The total number of field goals attempted per 100 possessions.
+        float or None
+            Field goal attempts per 100 possessions.
         """
         return self._field_goal_attempts_per_poss
 
-    @_float_property_decorator
+    @float_property_decorator
     def three_pointers_per_poss(self):
-        """Return three-pointers made per 100 possessions.
+        """Return three-pointers per 100 possessions.
 
         Returns
         -------
-        float
-            The total number of three-point field goals made per 100 possessions.
+        float or None
+            Three-pointers made per 100 possessions.
         """
         return self._three_pointers_per_poss
 
-    @_float_property_decorator
+    @float_property_decorator
     def three_point_attempts_per_poss(self):
         """Return three-point attempts per 100 possessions.
 
         Returns
         -------
-        float
-            The total number of three-point field goals attempted per 100 possessions.
+        float or None
+            Three-point attempts per 100 possessions.
         """
         return self._three_point_attempts_per_poss
 
-    @_int_property_decorator
+    @int_property_decorator
     def two_pointers(self):
-        """Return total two-point field goals made.
+        """Return two-point field goals made.
 
         Returns
         -------
-        int
-            The total number of two-point field goals made.
+        int or None
+            Two-point field goals made.
         """
         return self._two_pointers
 
-    @_int_property_decorator
+    @int_property_decorator
     def two_point_attempts(self):
-        """Return total two-point field goal attempts.
+        """Return two-point field goal attempts.
 
         Returns
         -------
-        int
-            The total number of two-point field goals attempted.
+        int or None
+            Two-point field goal attempts.
         """
         return self._two_point_attempts
 
-    @_float_property_decorator
+    @float_property_decorator
     def two_pointers_per_poss(self):
-        """Return two-point field goals per 100 possessions.
+        """Return two-pointers per 100 possessions.
 
         Returns
         -------
-        float
-            The total number of two-point field goals made per 100 possessions.
+        float or None
+            Two-pointers made per 100 possessions.
         """
         return self._two_pointers_per_poss
 
-    @_float_property_decorator
+    @float_property_decorator
     def two_point_attempts_per_poss(self):
         """Return two-point attempts per 100 possessions.
 
         Returns
         -------
-        float
-            The total number of two-point field goals attempted per 100 possessions.
+        float or None
+            Two-point attempts per 100 possessions.
         """
         return self._two_point_attempts_per_poss
 
-    @_float_property_decorator
+    @float_property_decorator
     def two_point_percentage(self):
         """Return two-point field goal percentage.
 
         Returns
         -------
-        float
-            The player's two-point field goal percentage (0-1).
+        float or None
+            Two-point field goal percentage (0-1).
         """
         return self._two_point_percentage
 
-    @_float_property_decorator
+    @float_property_decorator
     def free_throws_per_poss(self):
-        """Return free throws made per 100 possessions.
+        """Return free throws per 100 possessions.
 
         Returns
         -------
-        float
-            The total number of free throws made per 100 possessions.
+        float or None
+            Free throws made per 100 possessions.
         """
         return self._free_throws_per_poss
 
-    @_float_property_decorator
+    @float_property_decorator
     def free_throw_attempts_per_poss(self):
         """Return free throw attempts per 100 possessions.
 
         Returns
         -------
-        float
-            The total number of free throws attempted per 100 possessions.
+        float or None
+            Free throw attempts per 100 possessions.
         """
         return self._free_throw_attempts_per_poss
 
-    @_float_property_decorator
+    @float_property_decorator
     def offensive_rebounds_per_poss(self):
         """Return offensive rebounds per 100 possessions.
 
         Returns
         -------
-        float
-            The total number of offensive rebounds grabbed per 100 possessions.
+        float or None
+            Offensive rebounds per 100 possessions.
         """
         return self._offensive_rebounds_per_poss
 
-    @_float_property_decorator
+    @float_property_decorator
     def defensive_rebounds_per_poss(self):
         """Return defensive rebounds per 100 possessions.
 
         Returns
         -------
-        float
-            The total number of defensive rebounds grabbed per 100 possessions.
+        float or None
+            Defensive rebounds per 100 possessions.
         """
         return self._defensive_rebounds_per_poss
 
-    @_float_property_decorator
+    @float_property_decorator
     def total_rebounds_per_poss(self):
         """Return total rebounds per 100 possessions.
 
         Returns
         -------
-        float
-            The total number of rebounds (offensive + defensive) per 100 possessions.
+        float or None
+            Total rebounds per 100 possessions.
         """
         return self._total_rebounds_per_poss
 
-    @_float_property_decorator
+    @float_property_decorator
     def assists_per_poss(self):
         """Return assists per 100 possessions.
 
         Returns
         -------
-        float
-            The total number of assists tallied per 100 possessions.
+        float or None
+            Assists per 100 possessions.
         """
-        return self._assists_per_per_poss
+        return self._assists_per_poss
 
-    @_float_property_decorator
+    @float_property_decorator
     def steals_per_poss(self):
         """Return steals per 100 possessions.
 
         Returns
         -------
-        float
-            The total number of steals per 100 possessions.
+        float or None
+            Steals per 100 possessions.
         """
         return self._steals_per_poss
 
-    @_float_property_decorator
+    @float_property_decorator
     def blocks_per_poss(self):
         """Return blocks per 100 possessions.
 
         Returns
         -------
-        float
-            The total number of shots blocked per 100 possessions.
+        float or None
+            Blocks per 100 possessions.
         """
         return self._blocks_per_poss
 
-    @_float_property_decorator
+    @float_property_decorator
     def turnovers_per_poss(self):
         """Return turnovers per 100 possessions.
 
         Returns
         -------
-        float
-            The total number of turnovers per 100 possessions.
+        float or None
+            Turnovers per 100 possessions.
         """
         return self._turnovers_per_poss
 
-    @_float_property_decorator
+    @float_property_decorator
     def personal_fouls_per_poss(self):
         """Return personal fouls per 100 possessions.
 
         Returns
         -------
-        float
-            The total number of personal fouls committed per 100 possessions.
+        float or None
+            Personal fouls per 100 possessions.
         """
         return self._personal_fouls_per_poss
 
-    @_float_property_decorator
-    def points_per_poss):
-        """Return points scored per 100 possessions.
+    @float_property_decorator
+    def points_per_poss(self):
+        """Return points per 100 possessions.
 
         Returns
         -------
-        float
-            The total number of points scored per 100 possessions.
+        float or None
+            Points per 100 possessions.
         """
         return self._points_per_poss
 
-    @_float_property_decorator
+    @float_property_decorator
     def player_efficiency_rating(self):
-        """Return the player's efficiency rating.
+        """Return the efficiency rating.
 
         Returns
         -------
-        float
-            The player's efficiency rating, where an average player has a rating of 15.
+        float or None
+            The player's efficiency rating (average is 15).
         """
         return self._player_efficiency_rating
 
-    @_float_property_decorator
+    @float_property_decorator
     def offensive_win_shares(self):
         """Return offensive win shares.
 
-        Returns
+ Moran        Returns
         -------
-        float
-            The number of wins contributed to the team due to offensive plays.
+        float or None
+            Wins contributed by offensive plays.
         """
         return self._offensive_win_shares
 
-    @_float_property_decorator
+    @float_property_decorator
     def defensive_win_shares(self):
         """Return defensive win shares.
 
         Returns
         -------
-        float
-            The number of wins contributed to the team due to defensive plays.
+        float or None
+            Wins contributed by defensive plays.
         """
         return self._defensive_win_shares
 
-    @_float_property_decorator
+    @float_property_decorator
     def win_shares(self):
         """Return total win shares.
 
         Returns
         -------
-        float
-            The total number of wins contributed by offensive and defensive plays.
+        float or None
+            Total wins contributed by offensive and defensive plays.
         """
         return self._win_shares
 
-    @_float_property_decorator
+    @float_property_decorator
     def win_shares_per_48_minutes(self):
         """Return win shares per 48 minutes.
 
         Returns
         -------
-        float
-            The number of wins contributed per 48 minutes (average is 0.100).
+        float or None
+            Wins contributed per 48 minutes (average is 0.100).
         """
         return self._win_shares_per_48_minutes
 
-    @_float_property_decorator
+    @float_property_decorator
     def offensive_box_plus_minus(self):
         """Return offensive box plus/minus.
 
         Returns
         -------
-        float
-            The number of offensive points per 100 possessions compared to an average league player.
+        float or None
+            Offensive points per 100 possessions compared to league average.
         """
         return self._offensive_box_plus_minus
 
-    @_float_property_decorator
+    @float_property_decorator
     def defensive_box_plus_minus(self):
-        """Return defensive box plus minus.
+        """Return defensive box plus/minus.
 
         Returns
         -------
-        float
-            The number of defensive points per 100 possessions compared to an average league player.
+        float or None
+            Defensive points per 100 possessions compared to league average.
         """
         return self._defensive_box_plus_minus
 
-    @_float_property_decorator
+    @float_property_decorator
     def value_over_replacement_player(self):
         """Return value over replacement player.
 
         Returns
         -------
-        float
-            The total points per 100 possessions compared to a replacement-level player (-2.0), prorated for 82 games.
+        float or None
+            Points per 100 possessions compared to a replacement player, prorated for 82 games.
         """
         return self._value_over_replacement_player
 
-    @_float_property_decorator
+    @float_property_decorator
     def shooting_distance(self):
         """Return average shooting distance.
 
         Returns
         -------
-        float
-            The average distance of shots taken in feet.
+        float or None
+            Average distance of shots in feet.
         """
         return self._shooting_distance
 
-    @_float_property_decorator
+    @float_property_decorator
     def percentage_shots_two_pointers(self):
-        """Return percentage of shots that are two-pointers.
+        """Return percentage of two-point shots.
 
         Returns
         -------
-        float
-            The percentage of shots taken that are two-pointers (0-1).
+        float or None
+            Percentage of shots that are two-pointers (0-1).
         """
         return self._percentage_shots_two_pointers
 
-    @_float_property_decorator
+    @float_property_decorator
     def percentage_zero_to_three_footers(self):
         """Return percentage of shots from 0-3 feet.
 
         Returns
         -------
-        float
-            The percentage of shots taken from zero to three feet (0-1).
+        float or None
+            Percentage of shots from 0-3 feet (0-1).
         """
         return self._percentage_zero_to_three_footers
 
-    @_float_property_decorator
+    @float_property_decorator
     def percentage_three_to_ten_footers(self):
         """Return percentage of shots from 3-10 feet.
 
         Returns
         -------
-        float
-            The percentage of shots taken from three to ten feet (0-1).
+        float or None
+            Percentage of shots from 3-10 feet (0-1).
         """
         return self._percentage_three_to_ten_footers
 
-    @_float_property_decorator
+    @float_property_decorator
     def percentage_ten_to_sixteen_footers(self):
         """Return percentage of shots from 10-16 feet.
 
         Returns
         -------
-        float
-            The percentage of shots taken from ten to sixteen feet (0-1).
+        float or None
+            Percentage of shots from 10-16 feet (0-1).
         """
         return self._percentage_ten_to_sixteen_footers
 
-    @_float_property_decorator
+    @float_property_decorator
     def percentage_sixteen_foot_plus_two_pointers(self):
-        """Return percentage of shots from >16 feet (two-pointers).
+        """Return percentage of two-point shots from >16 feet.
 
         Returns
         -------
-        float
-            The percentage of two-point shots from beyond sixteen feet (0-1).
+        float or None
+            Percentage of two-point shots from beyond 16 feet (0-1).
         """
         return self._percentage_sixteen_foot_plus_two_pointers
 
-    @_float_property_decorator
+    @float_property_decorator
     def percentage_shots_three_pointers(self):
-        """Return percentage of shots that are three-pointers.
+        """Return percentage of three-point shots.
 
         Returns
         -------
-        float
-            The percentage of shots taken from beyond the three-point line (0-1).
+        float or None
+            Percentage of shots from three-point range (0-1).
         """
         return self._percentage_shots_three_pointers
 
-    @_float_property_decorator
-    def field_goal_percentage_zero_to_three_feet(self):
+    @float_property_decorator
+    def field_goal_perc_zero_to_three_feet(self):
         """Return field goal percentage from 0-3 feet.
 
         Returns
         -------
-        float
-            The field goal percentage for shots from 0-3 feet (0-1).
+        float or None
+            Field goal percentage from 0-3 feet (0-1).
         """
-        return self._field_goal_percentage_zero_to_three_feet
+        return self._field_goal_perc_zero_to_three_feet
 
-    @_float_property_decorator
-    def field_goal_percentage_three_to_ten_feet(self):
+    @float_property_decorator
+    def field_goal_perc_three_to_ten_feet(self):
         """Return field goal percentage from 3-10 feet.
 
         Returns
         -------
-        float
-            The field goal percentage for shots from 3-10 feet (0-1).
+        float or None
+            Field goal percentage from 3-10 feet (0-1).
         """
-        return self._field_goal_percentage_three_to_ten_feet
+        return self._field_goal_perc_three_to_ten_feet
 
-    @_float_property_decorator
-    def field_goal_percentage_ten_to_sixteen_feet(self):
+    @float_property_decorator
+    def field_goal_perc_ten_to_sixteen_feet(self):
         """Return field goal percentage from 10-16 feet.
 
         Returns
         -------
-        float
-            The field goal percentage for shots from 10-16 feet (0-1).
+        float or None
+            Field goal percentage from 10-16 feet (0-1).
         """
-        return self._field_goal_percentage_ten_to_sixteen_feet
+        return self._field_goal_perc_ten_to_sixteen_feet
 
-    @_float_property_decorator
-    def field_goal_percentage_sixteen_foot_plus_two_pointers(self):
+    @float_property_decorator
+    def field_goal_perc_sixteen_foot_plus_two_pointers(self):
         """Return field goal percentage for two-pointers from >16 feet.
 
         Returns
         -------
-        float
-            The field goal percentage for two-point shots from beyond 16 feet (0-1).
+        float or None
+            Field goal percentage for two-pointers from >16 feet (0-1).
         """
-        return self._field_goal_percentage_sixteen_to_two_pointers
+        return self._field_goal_perc_sixteen_foot_plus_two_pointers
 
-    @_float_property_decorator
+    @float_property_decorator
     def two_pointers_assisted_percentage(self):
-        """Return percentage of assisted two-point field goals.
+        """Return percentage of assisted two-pointers.
 
         Returns
         -------
-        float
-            The percentage of two-point field goals that were assisted (0-1).
+        float or None
+            Percentage of two-pointers that were assisted (0-1).
         """
         return self._two_pointers_assisted_percentage
 
-    @_float_property_decorator
-    def percentage_field_goals_dunks(self):
-        """Return percentage of field goals that are dunks.
+    @float_property_decorator
+    def percentage_field_goals_as_dunks(self):
+        """Return percentage of field goals as dunks.
 
         Returns
         -------
-        float
-            The percentage of shot attempts that were dunks (0-1).
+        float or None
+            Percentage of field goals that were dunks (0-1).
         """
-        return self._percentage_field_goals_dunks
+        return self._percentage_field_goals_as_dunks
 
-    @_int_property_decorator
+    @int_property_decorator
     def dunks(self):
-        """Return total number of dunks.
+        """Return total dunks.
 
         Returns
         -------
-        int
-            The total number of dunks made during the season.
+        int or None
+            Total dunks made.
         """
         return self._dunks
 
-    @_float_property_decorator
+    @float_property_decorator
     def three_pointers_assisted_percentage(self):
-        """Return percentage of assisted three-point field goals.
+        """Return percentage of assisted three-pointers.
 
         Returns
         -------
-        float
-            The percentage of three-point field goals that were assisted (0-1).
+        float or None
+            Percentage of three-pointers that were assisted (0-1).
         """
         return self._three_pointers_assisted_percentage
 
-    @_float_property_decorator
-    def percentage_three_pointers_from_corner(self):
-        """Return percentage of three-point shots from the corner.
+    @float_property_decorator
+    def percentage_of_three_pointers_from_corner(self):
+        """Return percentage of corner three-pointers.
 
         Returns
         -------
-        float
-            The percentage of three-point attempts from the corner (0-1).
+        float or None
+            Percentage of three-point attempts from the corner (0-1).
         """
         return self._percentage_of_three_pointers_from_corner
 
-    @_float_property_decorator
-    def three_point_percentage_from_corner(self):
+    @float_property_decorator
+    def three_point_shot_percentage_from_corner(self):
         """Return three-point percentage from the corner.
 
         Returns
         -------
-        float
-            The percentage of corner three-point shots made (0-1).
+        float or None
+            Three-point percentage from the corner (0-1).
         """
-        return self._three_point_percentage_from_corner
+        return self._three_point_shot_percentage_from_corner
 
-    @_int_property_decorator
+    @int_property_decorator
     def half_court_heaves(self):
-        """Return number of half-court shots attempted.
+        """Return half-court shot attempts.
 
         Returns
         -------
-        int
-            The total number of shots taken from beyond mid-court.
+        int or None
+            Total half-court shot attempts.
         """
         return self._half_court_heaves
 
-    @_int_property_decorator
-    def half_court_made(self):
-        """Return number of half-court shots made.
+    @int_property_decorator
+    def half_court_heaves_made(self):
+        """Return half-court shots made.
 
         Returns
         -------
-        int
-            The number of shots made from beyond mid-court.
+        int or None
+            Total half-court shots made.
         """
         return self._half_court_heaves_made
 
-    @_int_property_decorator_default_zero
+    @int_property_decorator_default_zero
     def point_guard_percentage(self):
-        """Return percentage of time spent as point guard.
+        """Return percentage of time as point guard.
 
         Returns
         -------
         int
-            The percentage of time spent as a point guard (0-100).
+            Percentage of time as point guard (0-100).
         """
         return self._point_guard_percentage
 
-    @_int_property_decorator_default_zero
+    @int_property_decorator_default_zero
     def shooting_guard_percentage(self):
-        """Return percentage of time spent as shooting guard.
+        """Return percentage of time as shooting guard.
 
         Returns
         -------
         int
-            The percentage of time spent as a shooting guard (0-100).
+            Percentage of time as shooting guard (0-100).
         """
         return self._shooting_guard_percentage
 
-    @_int_property_decorator_default_zero
+    @int_property_decorator_default_zero
     def small_forward_percentage(self):
-        """Return percentage of time spent as small forward.
+        """Return percentage of time as small forward.
 
         Returns
         -------
         int
-            The percentage of time spent as a small forward (0-100).
+            Percentage of time as small forward (0-100).
         """
         return self._small_forward_percentage
 
-    @_int_property_decorator_default_zero
+    @int_property_decorator_default_zero
     def power_forward_percentage(self):
-        """Return percentage of time spent as power forward.
+        """Return percentage of time as power forward.
 
         Returns
         -------
         int
-            The percentage of time spent as a power forward (0-100).
+            Percentage of time as power forward (0-100).
         """
         return self._power_forward_percentage
 
-    @_int_property_decorator_default_zero
+    @int_property_decorator_default_zero
     def center_percentage(self):
-        """Return percentage of time spent as center.
+        """Return percentage of time as center.
 
         Returns
         -------
         int
-            The percentage of time spent as a center (0-100).
+            Percentage of time as center (0-100).
         """
         return self._center_percentage
 
-    @_float_property_decorator
+    @float_property_decorator
     def on_court_plus_minus(self):
-        """Return points contributed per 100 possessions on court.
+        """Return on-court plus/minus.
 
         Returns
         -------
-        float
-            The number of points contributed per 100 possessions while on the court.
+        float or None
+            Points contributed per 100 possessions on court.
         """
         return self._on_court_plus_minus
 
-    @_float_property_decorator
+    @float_property_decorator
     def net_plus_minus(self):
-        """Return net points contributed per 100 possessions.
+        """Return net plus/minus.
 
         Returns
         -------
-        float
-            The net points per 100 possessions, on or off the court.
+        float or None
+            Net points per 100 possessions.
         """
         return self._net_plus_minus
 
-    @_int_property_decorator
+    @int_property_decorator
     def passing_turnovers(self):
-        """Return total number of passing turnovers.
+        """Return passing turnovers.
 
         Returns
         -------
-        int
-            The total number of turnovers due to bad passes.
+        int or None
+            Total turnovers due to bad passes.
         """
         return self._passing_turnovers
 
-    @_int_property_decorator
+    @int_property_decorator
     def lost_ball_turnovers(self):
-        """Return total number of lost-ball turnovers.
+        """Return lost-ball turnovers.
 
         Returns
         -------
-        int
-            The total number of turnovers due to losing the ball.
+        int or None
+            Total turnovers due to losing the ball.
         """
         return self._lost_ball_turnovers
 
-    @_int_property_decorator
+    @int_property_decorator
     def other_turnovers(self):
-        """Return total number of other turnovers.
+        """Return other turnovers.
 
         Returns
         -------
-        int
-            The total number of non-passing/dribbling turnovers.
+        int or None
+            Total non-passing/dribbling turnovers.
         """
         return self._other_turnovers
 
-    @_int_property_decorator
+    @int_property_decorator
     def shooting_fouls(self):
-        """Return total number of shooting fouls committed.
+        """Return shooting fouls committed.
 
         Returns
         -------
-        int
-            The total number of shooting fouls committed.
+        int or None
+            Total shooting fouls committed.
         """
         return self._shooting_fouls
 
-    @_int_property_decorator
+    @int_property_decorator
     def blocking_fouls(self):
-        """Return total number of blocking fouls committed.
+        """Return blocking fouls committed.
 
         Returns
         -------
-        int
-            The total number of blocking fouls committed.
+        int or None
+            Total blocking fouls committed.
         """
         return self._blocking_fouls
 
-    @_int_property_decorator
+    @int_property_decorator
     def offensive_fouls(self):
-        """Return total number of offensive fouls committed.
+        """Return offensive fouls committed.
 
         Returns
         -------
-        int
-            The total number of offensive fouls committed.
+        int or None
+            Total offensive fouls committed.
         """
         return self._offensive_fouls
 
-    @_int_property_decorator
+    @int_property_decorator
     def take_fouls(self):
-        """Return total number of take-fouls committed.
+        """Return take-fouls committed.
 
         Returns
         -------
-        int
-            The total number of take-fouls committed to stop a shooting motion.
+        int or None
+            Total take-fouls committed.
         """
         return self._take_fouls
 
-    @_int_property_decorator
+    @int_property_decorator
     def points_generated_by_assists(self):
         """Return points generated by assists.
 
         Returns
         -------
-        int
-            Total points generated from the player's assists.
+        int or None
+            Total points from assists.
         """
         return self._points_generated_by_assists
 
-    @_int_property_decorator shooting_fouls_drawn(self):
-        """Return number of shooting fouls drawn.
+    @int_property_decorator
+    def shooting_fouls_drawn(self):
+        """Return shooting fouls drawn.
 
         Returns
         -------
-        int
-            The total number of shooting fouls drawn during the season.
+        int or None
+            Total shooting fouls drawn.
         """
         return self._shooting_fouls_drawn
 
-    @_int_property_decorator
+    @int_property_decorator
     def and_ones(self):
-        """Return number of and-one plays.
+        """Return and-one plays.
 
         Returns
         -------
-        int
-            The total number of times fouled while making a basket.
+        int or None
+            Total and-one plays.
         """
         return self._and_ones
 
-    @_int_property_decorator
+    @int_property_decorator
     def shots_blocked(self):
-        """Return number of shots blocked by opponents.
+        """Return shots blocked by opponents.
 
         Returns
         -------
-        int
-            The total number of shots taken that were blocked.
+        int or None
+            Total shots blocked.
         """
         return self._shots_blocked
 
-    @_int_property_decorator
+    @int_property_decorator
     def salary(self):
-        """Return the player's annual salary.
+        """Return annual salary.
 
         Returns
         -------
-        int
-            The player's annual salary, rounded down.
+        int or None
+            Annual salary in dollars.
         """
         return self._salary
 
     @property
     def contract(self):
-        """Return the player's contract details.
+        """Return contract details.
 
         Returns
         -------
-        dict
-            A dictionary where keys are season strings (e.g., '2018-19') and
-            values are salary strings (e.g., '$40,000,000').
+        dict or None
+            Dictionary of seasons to salaries.
         """
         return self._contract
 
-
 class Roster:
-    """Get stats for all players on a roster.
+    """Statistics for all players on a team's roster.
 
-    Request a team's roster for a given season and create instances of the
-    Player class for each player, containing a detailed list of the players
-    statistics and information.
+    Retrieves player and coach information for a team's roster in a given season.
+    Creates `Player` instances for each roster member, or a slim dictionary of
+    player IDs and names if specified.
 
     Parameters
     ----------
     team : str
-        The team's 3-letter abbreviation, such as 'HOU' for the Houston Rockets.
+        The team's 3-letter abbreviation (e.g., 'HOU' for Houston Rockets).
     year : str, optional
-        The 4-digit year to pull the roster from, such as '2023'. If blank,
-        defaults to the most recent season.
+        The 4-digit year for the roster (e.g., '2023'). Defaults to the most recent season.
     slim : bool, optional
-        If True, returns a limited subset of player information (name and ID)
-        instead of full stats, reducing response time. Defaults to False.
+        If True, returns only player IDs and names, reducing data retrieval time (default is False).
     """
     def __init__(self, team, year=None, slim=False):
-        self._team = team
+        self._team = team.upper()
         self._slim = slim
         self._coach = None
-        if slim:
-            self._players = {}
-        else:
-            self._players = []
+        self._players = {} if slim else []
         self._find_players_with_coach(year)
 
     def __str__(self):
@@ -1597,9 +1238,12 @@ class Roster:
         Returns
         -------
         str
-            A string listing each player with name and ID, one per line.
+            A newline-separated list of players (name and ID).
         """
-        players = [f'{player.name} ({player.player_id})'.strip() for player in self._players]
+        if self._slim:
+            players = [f'{name} ({pid})' for pid, name in self._players.items()]
+        else:
+            players = [f'{player.name} ({player.player_id})' for player in self._players]
         return '\n'.join(players)
 
     def __repr__(self):
@@ -1608,81 +1252,24 @@ class Roster:
         Returns
         -------
         str
-            A string listing each player with name and ID, one per line.
+            A newline-separated list of players (name and ID).
         """
         return self.__str__()
 
-    def _pull_team_page(self, url):
-        """Download the team page.
-
-        Download the requested team's season page and create a BeautifulSoup object.
-
-        Parameters
-        ----------
-        url : str
-            The URL for the requested team and season.
-
-        Returns
-        -------
-        BeautifulSoup
-            BeautifulSoup object of the team's HTML page.
-        """
-        try:
-            response = requests.get(url)
-            response.raise_for_status()
-            return BeautifulSoup(response.text, 'html.parser')
-        except (HTTPError, requests.RequestException):
-            return None
-
     def _create_url(self, year):
-        """Build the team URL.
+        """Build the roster URL.
 
         Parameters
         ----------
         year : str
-            The 4-digit string representing the year to pull the roster from.
+            The 4-digit year for the roster.
 
         Returns
         -------
         str
-            The URL for the team's season page.
+            The URL for the team's roster page.
         """
-        return ROSTER_URL % (self._team.upper(), year)
-
-    def _get_id(self, player):
-        """Parse the player ID.
-
-        Parameters
-        ----------
-        player : BeautifulSoup object
-            A BeautifulSoup object representing player information from the roster table.
-
-        Returns
-        -------
-        str
-            The player's ID.
-        """
-        name_tag = player.find('td', {'data-stat': 'player'}).find('a')
-        if name_tag:
-            href = name_tag.get('href')
-            return re.sub(r'.*/players/./|././html.*$', '', href)
-        return ''
-
-    def _get_name(self, player):
-        """Parse the player's name.
-
-        Parameters
-        ----------
-        player : BeautifulSoup object
-            A BeautifulSoup object representing player information from the roster table.
-
-        Returns
-        -------
-        str
-            The player's name.
-        """
-        name_tag = player.find('td', {'data-stat': 'player'}).find('a')
-        return name_tag.text if name_tag else ''
+        return ROSTER_URL % (self._team, year)
 
     def _parse_coach(self, page):
         """Parse the team's coach.
@@ -1690,14 +1277,14 @@ class Roster:
         Parameters
         ----------
         page : BeautifulSoup object
-            A BeautifulSoup object representing the team's roster page.
+            The roster page HTML.
 
         Returns
         -------
-        str
+        str or None
             The coach's name.
         """
-        for p in page.find_all('p'):
+        for p in page.select('p'):
             strong = p.find('strong')
             if strong and strong.text.strip() == 'Coach:':
                 a = p.find('a')
@@ -1705,42 +1292,38 @@ class Roster:
         return None
 
     def _find_players_with_coach(self, year):
-        """Find all player IDs and coach for the team.
-
-        Pull the roster table, parse player IDs, and create Player instances for
-        each roster member. Set the coach attribute.
+        """Find players and coach for the roster.
 
         Parameters
         ----------
-        year : str
-            The year to pull the team's roster from.
+        year : str, optional
+            The year for the roster. Defaults to the most recent season.
+
+        Raises
+        ------
+        ValueError
+            If the team page cannot be retrieved.
         """
         if not year:
-            year = utils._find_year_for_season('nba')
-            if year == 2021:
-                try:
-                    response = requests.get(self._create_url(year))
-                    response.raise_for_status()
-                except (HTTPError, requests.RequestException):
-                    year = str(int(year) - 1)
-            if not utils._url_exists(self._create_url(year)) and utils._url_exists(self._create_url(str(int(year) - 1))):
+            year = _find_year_for_season('nba')
+            if year == '2021' and not _url_exists(self._create_url(year)):
+                year = str(int(year) - 1)
+            elif not _url_exists(self._create_url(year)) and _url_exists(self._create_url(str(int(year) - 1))):
                 year = str(int(year) - 1)
         url = self._create_url(year)
-        page = self._pull_team_page(url)
+        page = _fetch_html(url)
         if not page:
-            raise ValueError(f"Can't pull requested team page. Ensure the following URL exists: {url}")
-        players = page.select('table#roster tbody tr')
-        for player in players:
-            player_id = self._get_id(player)
-            if not player_id or player_id == '':
+            raise ValueError(f"Cannot retrieve team page: {url}")
+        self._coach = self._parse_coach(page)
+        for row in page.select('table#roster tbody tr'):
+            player_id = _extract_entity_id(row)
+            if not player_id:
                 continue
             if self._slim:
-                name = self._get_name(player)
+                name = _extract_entity_name(row)
                 self._players[player_id] = name
             else:
-                player_instance = Player(player_id)
-                self._players.append(player_instance)
-        self._coach = self._parse_coach(page)
+                self._players.append(Player(player_id))
 
     @property
     def players(self):
@@ -1749,8 +1332,7 @@ class Roster:
         Returns
         -------
         list or dict
-            A list of Player instances if slim is False, or a dictionary of
-            player IDs mapped to names if slim is True.
+            List of `Player` instances if slim is False, else dictionary of player IDs to names.
         """
         return self._players
 
@@ -1760,7 +1342,7 @@ class Roster:
 
         Returns
         -------
-        str
-            The coach's name, e.g., "Mike D'Antoni".
+        str or None
+            The coach's name (e.g., 'Mike D'Antoni').
         """
         return self._coach

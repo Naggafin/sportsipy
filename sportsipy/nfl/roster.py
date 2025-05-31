@@ -1,1897 +1,2104 @@
 import pandas as pd
-import re
-from functools import wraps
-from lxml.etree import ParserError, XMLSyntaxError
-from bs4 import BeautifulSoup
-from urllib.error import HTTPError
-from .. import utils
+from ..base import AbstractParser, int_property_decorator, float_property_decorator, _fetch_html, _parse_field, _clean_stat, _get_stats_table, _resolve_year
 from .constants import PLAYER_SCHEME, PLAYER_URL, ROSTER_URL, DETAILED_STATS
 from .player import AbstractPlayer
 
-
-def _cleanup(prop):
-    try:
-        prop = prop.replace('%', '')
-        prop = prop.replace('$', '')
-        prop = prop.replace(',', '')
-        return prop.replace('+', '')
-    # Occurs when a value is of Nonetype. When that happens, return a blank
-    # string as whatever came in had an incomplete value.
-    except AttributeError:
-        return ''
-
-
-def _int_property_decorator(func):
-    @property
-    @wraps(func)
-    def wrapper(*args):
-        if func.__name__ in DETAILED_STATS:
-            index = args[0]._detailed_stats_index
-        else:
-            index = args[0]._index
-        prop = func(*args)
-        try:
-            value = _cleanup(prop[index])
-            return int(value)
-        except (ValueError, TypeError, IndexError):
-            # If there is no value, default to None
-            return None
-    return wrapper
-
-
-def _float_property_decorator(func):
-    @property
-    @wraps(func)
-    def wrapper(*args):
-        if func.__name__ in DETAILED_STATS:
-            index = args[0]._detailed_stats_index
-        else:
-            index = args[0]._index
-        prop = func(*args)
-        try:
-            value = _cleanup(prop[index])
-            return float(value)
-        except (ValueError, TypeError, IndexError):
-            # If there is no value, default to None
-            return None
-    return wrapper
-
-
 class Player(AbstractPlayer):
-    """
-    Get player information and stats for all seasons.
+    """Representation of an NFL player's statistics across seasons.
 
-    Given a player ID, such as 'BreeDr00' for Drew Brees, capture all relevant
-    stats and information like name, team, height/weight, career starts, single
-    season pasing yards, sacks, and much more.
-
-    By default, the class instance will return the player's career stats, but
-    single-season stats can be found by calling the instance with the requested
-    season as denoted on pro-football-reference.com.
+    Retrieves comprehensive player statistics from pro-football-reference.com
+    for a given player ID, including passing, rushing, receiving, and defensive stats.
+    Supports querying stats for specific seasons or career totals.
 
     Parameters
     ----------
-    player_id : string
-        A player's ID according to pro-football-reference.com, such as
-        'BreeDr00' for Drew Brees. The player ID can be found by navigating to
-        the player's stats page and getting the string between the final slash
-        and the '.htm' in the URL. In general, the ID is in the format
-        'LlllFfNN' where 'Llll' are the first 4 letters in the player's last
-        name with the first letter capitalized, 'Ff' are the first 2 letters in
-        the player's first name where the first letter is capitalized, and 'NN'
-        is a number starting at '00' for the first time that player ID has been
-        used and increments by 1 for every successive player.
+    player_id : str
+        The player's ID (e.g., 'BreeDr00' for Drew Brees), typically in the format
+        'LlllFfNN' where 'Llll' is the first four letters of the last name,
+        'Ff' is the first two letters of the first name, and 'NN' is a numeric suffix.
+
+    Attributes
+    ----------
+    name : str or None
+        The player's full name.
+    player_id : str
+        The player's unique ID.
+    season : str
+        The current season being queried ('YYYY' or 'Career').
+    team_abbreviation : str or None
+        The team's 3-letter abbreviation (e.g., 'NOR').
     """
     def __init__(self, player_id):
         self._most_recent_season = ''
-        self._detailed_stats_seasons = None
-        self._index = None
-        self._detailed_stats_index = None
+        self._detailed_stats_seasons = []
+        self._index = 0
+        self._detailed_stats_index = 0
         self._player_id = player_id
-        self._season = None
+        self._season = []
         self._name = None
-        self._team_abbreviation = None
-        self._position = None
+        self._team_abbreviation = []
+        self._position = []
         self._height = None
         self._weight = None
         self._birth_date = None
-        self._games = None
-        self._games_started = None
-        self._approximate_value = None
+        self._games = []
+        self._games_started = []
+        self._approximate_value = []
         # Passing-specific stats
-        self._qb_record = None
-        self._completed_passes = None
-        self._attempted_passes = None
-        self._passing_completion = None
-        self._passing_yards = None
-        self._passing_touchdowns = None
-        self._passing_touchdown_percentage = None
-        self._interceptions_thrown = None
-        self._interception_percentage = None
-        self._longest_pass = None
-        self._passing_yards_per_attempt = None
-        self._adjusted_yards_per_attempt = None
-        self._yards_per_completed_pass = None
-        self._yards_per_game_played = None
-        self._quarterback_rating = None
-        self._espn_qbr = None
-        self._times_sacked = None
-        self._yards_lost_to_sacks = None
-        self._net_yards_per_pass_attempt = None
-        self._adjusted_net_yards_per_pass_attempt = None
-        self._sack_percentage = None
-        self._fourth_quarter_comebacks = None
-        self._game_winning_drives = None
-        self._yards_per_attempt_index = None
-        self._net_yards_per_attempt_index = None
-        self._adjusted_yards_per_attempt_index = None
-        self._adjusted_net_yards_per_attempt_index = None
-        self._completion_percentage_index = None
-        self._touchdown_percentage_index = None
-        self._interception_percentage_index = None
-        self._sack_percentage_index = None
-        self._passer_rating_index = None
+        self._qb_record = []
+        self._completed_passes = []
+        self._attempted_passes = []
+        self._passing_completion = []
+        self._passing_yards = []
+        self._passing_touchdowns = []
+        self._passing_touchdown_percentage = []
+        self._interceptions_thrown = []
+        self._interception_percentage = []
+        self._longest_pass = []
+        self._passing_yards_per_attempt = []
+        self._adjusted_yards_per_attempt = []
+        self._yards_per_completed_pass = []
+        self._yards_per_game_played = []
+        self._quarterback_rating = []
+        self._espn_qbr = []
+        self._times_sacked = []
+        self._yards_lost_to_sacks = []
+        self._net_yards_per_pass_attempt = []
+        self._adjusted_net_yards_per_pass_attempt = []
+        self._sack_percentage = []
+        self._fourth_quarter_comebacks = []
+        self._game_winning_drives = []
+        self._yards_per_attempt_index = []
+        self._net_yards_per_attempt_index = []
+        self._adjusted_yards_per_attempt_index = []
+        self._adjusted_net_yards_per_attempt_index = []
+        self._completion_percentage_index = []
+        self._touchdown_percentage_index = []
+        self._interception_percentage_index = []
+        self._sack_percentage_index = []
+        self._passer_rating_index = []
         # Rushing-specific stats
-        self._rush_attempts = None
-        self._rush_yards = None
-        self._rush_touchdowns = None
-        self._longest_rush = None
-        self._rush_yards_per_attempt = None
-        self._rush_yards_per_game = None
-        self._rush_attempts_per_game = None
+        self._rush_attempts = []
+        self._rush_yards = []
+        self._rush_touchdowns = []
+        self._longest_rush = []
+        self._rush_yards_per_attempt = []
+        self._rush_yards_per_game = []
+        self._rush_attempts_per_game = []
         # Advanced rushing stats
-        self._first_downs_rushing = None
-        self._rush_yards_before_contact = None
-        self._rush_yards_before_contact_per_attempt = None
-        self._rush_yards_after_contact = None
-        self._rush_yards_after_contact_per_attempt = None
-        self._rush_broken_tackles = None
-        self._rush_attempts_per_broken_tackle = None
+        self._first_downs_rushing = []
+        self._rush_yards_before_contact = []
+        self._rush_yards_before_contact_per_attempt = []
+        self._rush_yards_after_contact = []
+        self._rush_yards_after_contact_per_attempt = []
+        self._rush_broken_tackles = []
+        self._rush_attempts_per_broken_tackle = []
         # Receiving-specific stats
-        self._times_pass_target = None
-        self._receptions = None
-        self._receiving_yards = None
-        self._receiving_yards_per_reception = None
-        self._receiving_touchdowns = None
-        self._longest_reception = None
-        self._receptions_per_game = None
-        self._receiving_yards_per_game = None
-        self._catch_percentage = None
+        self._times_pass_target = []
+        self._receptions = []
+        self._receiving_yards = []
+        self._receiving_yards_per_reception = []
+        self._receiving_touchdowns = []
+        self._longest_reception = []
+        self._receptions_per_game = []
+        self._receiving_yards_per_game = []
+        self._catch_percentage = []
         # Advanced receiving stats
-        self._first_downs_receiving = None
-        self._receiving_yards_before_catch = None
-        self._receiving_yards_before_catch_per_reception = None
-        self._receiving_yards_after_catch = None
-        self._receiving_yards_after_catch_per_reception = None
-        self._receiving_broken_tackles = None
-        self._receptions_per_broken_tackle = None
-        self._dropped_passes = None
-        self._drop_percentage = None
+        self._first_downs_receiving = []
+        self._receiving_yards_before_catch = []
+        self._receiving_yards_before_catch_per_reception = []
+        self._receiving_yards_after_catch = []
+        self._receiving_yards_after_catch_per_reception = []
+        self._receiving_broken_tackles = []
+        self._receptions_per_broken_tackle = []
+        self._dropped_passes = []
+        self._drop_percentage = []
         # Combined receiving and rushing stats
-        self._touches = None
-        self._yards_per_touch = None
-        self._yards_from_scrimmage = None
-        self._rushing_and_receiving_touchdowns = None
-        self._fumbles = None
+        self._touches = []
+        self._yards_per_touch = []
+        self._yards_from_scrimmage = []
+        self._rushing_and_receiving_touchdowns = []
+        self._fumbles = []
         # Punt/Kick return stats
-        self._punt_returns = None
-        self._punt_return_yards = None
-        self._punt_return_touchdown = None
-        self._longest_punt_return = None
-        self._yards_per_punt_return = None
-        self._kickoff_returns = None
-        self._kickoff_return_yards = None
-        self._kickoff_return_touchdown = None
-        self._longest_kickoff_return = None
-        self._yards_per_kickoff_return = None
-        self._all_purpose_yards = None
+        self._punt_returns = []
+        self._punt_return_yards = []
+        self._punt_return_touchdown = []
+        self._longest_punt_return = []
+        self._yards_per_punt_return = []
+        self._kickoff_returns = []
+        self._kickoff_return_yards = []
+        self._kickoff_return_touchdown = []
+        self._longest_kickoff_return = []
+        self._yards_per_kickoff_return = []
+        self._all_purpose_yards = []
         # Kicking-specific stats
-        self._less_than_nineteen_yards_field_goal_attempts = None
-        self._less_than_nineteen_yards_field_goals_made = None
-        self._twenty_to_twenty_nine_yard_field_goal_attempts = None
-        self._twenty_to_twenty_nine_yard_field_goals_made = None
-        self._thirty_to_thirty_nine_yard_field_goal_attempts = None
-        self._thirty_to_thirty_nine_yard_field_goals_made = None
-        self._fourty_to_fourty_nine_yard_field_goal_attempts = None
-        self._fourty_to_fourty_nine_yard_field_goals_made = None
-        self._fifty_plus_yard_field_goal_attempts = None
-        self._fifty_plus_yard_field_goals_made = None
-        self._field_goals_attempted = None
-        self._field_goals_made = None
-        self._longest_field_goal_made = None
-        self._field_goal_percentage = None
-        self._extra_points_attempted = None
-        self._extra_points_made = None
-        self._extra_point_percentage = None
+        self._less_than_nineteen_yards_field_goal_attempts = []
+        self._less_than_nineteen_yards_field_goals_made = []
+        self._twenty_to_twenty_nine_yard_field_goal_attempts = []
+        self._twenty_to_twenty_nine_yard_field_goals_made = []
+        self._thirty_to_thirty_nine_yard_field_goal_attempts = []
+        self._thirty_to_thirty_nine_yard_field_goals_made = []
+        self._forty_to_forty_nine_yard_field_goal_attempts = []
+        self._forty_to_forty_nine_yard_field_goals_made = []
+        self._fifty_plus_yard_field_goal_attempts = []
+        self._fifty_plus_yard_field_goals_made = []
+        self._field_goals_attempted = []
+        self._field_goals_made = []
+        self._longest_field_goal_made = []
+        self._field_goal_percentage = []
+        self._extra_points_attempted = []
+        self._extra_points_made = []
+        self._extra_point_percentage = []
         # Punting-specific stats
-        self._punts = None
-        self._total_punt_yards = None
-        self._longest_punt = None
-        self._blocked_punts = None
+        self._punts = []
+        self._total_punt_yards = []
+        self._longest_punt = []
+        self._blocked_punts = []
         # Defensive-specific stats
-        self._interceptions = None
-        self._yards_returned_from_interception = None
-        self._interceptions_returned_for_touchdown = None
-        self._longest_interception_return = None
-        self._passes_defended = None
-        self._fumbles_forced = None
-        self._fumbles_recovered = None
-        self._yards_recovered_from_fumble = None
-        self._fumbles_recovered_for_touchdown = None
-        self._sacks = None
-        self._tackles = None
-        self._assists_on_tackles = None
-        self._safeties = None
-
-        player_data = self._pull_player_data()
-        if not player_data:
-            return
-        self._find_initial_index()
-        AbstractPlayer.__init__(self, player_id, self._name, player_data)
+        self._interceptions = []
+        self._yards_returned_from_interception = []
+        self._interceptions_returned_for_touchdown = []
+        self._longest_interception_return = []
+        self._passes_defended = []
+        self._fumbles_forced = []
+        self._fumbles_recovered = []
+        self._yards_recovered_from_fumble = []
+        self._fumbles_recovered_for_touchdown = []
+        self._sacks = []
+        self._tackles = []
+        self._assists_on_tackles = []
+        self._safeties = []
+        AbstractPlayer.__init__(self, player_id)
+        self._pull_player_data()
 
     def __str__(self):
-        """
-        Return the string representation of the class.
+        """Return string representation of the player.
+
+        Returns
+        -------
+        str
+            Player name and ID (e.g., 'Drew Brees (BreeDr00)').
         """
         return f'{self.name} ({self.player_id})'
 
     def __repr__(self):
-        """
-        Return the string representation of the class.
-        """
+        """Return string representation of the player."""
         return self.__str__()
 
     def _build_url(self):
-        """
-        Create the player's URL to pull stats from.
-
-        The player's URL requires the first letter of the player's last name
-        followed by the player ID.
+        """Build the player's stats page URL.
 
         Returns
         -------
-        string
-            The string URL for the player's stats page.
+        str
+            URL for the player's stats page.
         """
-        # The first letter of the player's last name is used to sort the player
-        # list and is a part of the URL.
-        first_character = self._player_id[0]
-        return PLAYER_URL % (first_character, self._player_id)
-
-    def _retrieve_html_page(self):
-        """
-        Download the requested player's stats page.
-
-        Download the requested page and strip all of the comment tags before
-        returning a PyQuery object which will be used to parse the data.
-        Oftentimes, important data is contained in tables which are hidden in
-        HTML comments and not accessible via PyQuery.
-
-        Returns
-        -------
-        PyQuery object
-            The requested page is returned as a queriable PyQuery object with
-            the comment tags removed.
-        """
-        url = self._build_url()
-        try:
-            response = requests.get(url); url_data = BeautifulSoup(response.text, 'lxml')
-        except (HTTPError, ParserError):
-            return None
-        # For NFL, a 404 page doesn't actually raise a 404 error, so it needs
-        # to be manually checked.
-        if 'Page Not Found (404 error)' in str(url_data):
-            return None
-        return pq(utils._remove_html_comment_tags(url_data))
+        first_char = self._player_id[0].lower()
+        return PLAYER_URL % (first_char, self._player_id)
 
     def _parse_season(self, row):
-        """
-        Parse the season string from the table.
-
-        The season is generally located in the first column of the stats tables
-        and should be parsed to detonate which season metrics are being pulled
-        from.
+        """Parse the season from a stats table row.
 
         Parameters
         ----------
-        row : PyQuery object
-            A PyQuery object of a single row in a stats table.
+        row : BeautifulSoup element
+            A table row containing player stats.
 
         Returns
         -------
-        string
-            A string representation of the season in the format 'YYYY', such as
-            '2017'.
+        str
+            The season in 'YYYY' format, cleaned of extra characters.
         """
-        season = utils._parse_field(PLAYER_SCHEME, row, 'season')
+        season = _parse_field(PLAYER_SCHEME, row, 'season') or ''
         return season.replace('*', '').replace('+', '')
 
-    def _combine_season_stats(self, table_rows, career_stats, all_stats_dict,
-                              detailed):
-        """
-        Combine all stats for each season.
-
-        Since all of the stats are spread across multiple tables, they should
-        be combined into a single field which can be used to easily query stats
-        at once.
+    def _combine_season_stats(self, table_rows, career_stats, all_stats_dict, detailed):
+        """Combine stats from a table into the stats dictionary.
 
         Parameters
         ----------
-        table_rows : generator
-            A generator where each element is a row in a stats table.
-        career_stats : generator
-            A generator where each element is a row in the footer of a stats
-            table. Career stats are kept in the footer, hence the usage.
-        all_stats_dict : dictionary
-            A dictionary of all stats separated by season where each key is the
-            season ``string``, such as '2017', and the value is a
-            ``dictionary`` with a ``string`` of 'data' and ``string``
-            containing all of the data.
-        detailed : boolean
-            A boolean which evaluates to True if the passed table is one of the
-            advanced stats tables which is labeled as 'detailed' on the site.
+        table_rows : list
+            List of BeautifulSoup row elements from a stats table.
+        career_stats : list
+            List of BeautifulSoup row elements from the table footer.
+        all_stats_dict : dict
+            Dictionary of stats by season.
+        detailed : bool
+            True if the table contains advanced stats.
 
         Returns
         -------
-        dictionary
-            Returns an updated version of the passed all_stats_dict which
-            includes more metrics from the provided table.
+        dict
+            Updated stats dictionary.
         """
         most_recent_season = self._most_recent_season
-        detailed_stats_seasons = []
-        if not table_rows:
-            table_rows = []
+        detailed_stats_seasons = self._detailed_stats_seasons
         for row in table_rows:
             season = self._parse_season(row)
-            try:
-                all_stats_dict[season]['data'] += str(row)
-            except KeyError:
-                all_stats_dict[season] = {'data': str(row)}
-            # Create a list of detailed stats which aren't populated for all
-            # seasons a player has been active.
+            if not season:
+                continue
+            all_stats_dict.setdefault(season, {'data': ''})['data'] += str(row)
             if detailed:
                 detailed_stats_seasons.append(season)
-            # Ignore the detailed stats tables as those might throw off the
-            # most recent season as they are not always populated.
             else:
                 most_recent_season = season
         self._most_recent_season = most_recent_season
         if detailed:
-            self._detailed_stats_seasons = detailed_stats_seasons
-        if not career_stats:
-            return all_stats_dict
-        try:
-            all_stats_dict['Career']['data'] += str(next(career_stats))
-        except KeyError:
-            try:
-                all_stats_dict['Career'] = {'data': str(next(career_stats))}
-            # Occurs when the player doesn't have any career stats listed on
-            # their page in error.
-            except StopIteration:
-                return all_stats_dict
-        except StopIteration:
-            return all_stats_dict
+            self._detailed_stats_seasons = list(set(detailed_stats_seasons))
+        if career_stats:
+            all_stats_dict.setdefault('Career', {'data': ''})['data'] += str(career_stats[0])
         return all_stats_dict
 
-    def _combine_all_stats(self, player_info):
-        """
-        Pull stats from all tables into a single data structure.
-
-        Pull the stats from all of the requested tables into a dictionary that
-        is separated by season to allow easy queries of the player's stats for
-        each season.
+    def _combine_all_stats(self, soup):
+        """Combine stats from all tables.
 
         Parameters
         ----------
-        player_info : PyQuery object
-            A PyQuery object containing all of the stats information for the
-            requested player.
+        soup : BeautifulSoup
+            Parsed HTML of the player's stats page.
 
         Returns
         -------
-        dictionary
-            Returns a dictionary where all stats from each table are combined
-            by season to allow easy queries by year.
+        dict
+            Dictionary of stats by season.
         """
         all_stats_dict = {}
-
-        for table_id in ['passing', 'passing_advanced',
-                         'rushing_and_receiving', 'receiving_and_rushing',
-                         'detailed_rushing_and_receiving',
-                         'detailed_receiving_and_rushing',
-                         'defense', 'returns', 'kicking']:
-            table_items = utils._get_stats_table(player_info,
-                                                 'table#%s' % table_id)
-            career_items = utils._get_stats_table(player_info,
-                                                  'table#%s' % table_id,
-                                                  footer=True)
-            all_stats_dict = self._combine_season_stats(table_items,
-                                                        career_items,
-                                                        all_stats_dict,
-                                                        'detailed' in table_id)
+        table_ids = [
+            'passing', 'passing_advanced', 'rushing_and_receiving',
+            'receiving_and_rushing', 'detailed_rushing_and_receiving',
+            'detailed_receiving_and_rushing', 'defense', 'returns', 'kicking'
+        ]
+        for table_id in table_ids:
+            table_rows = _get_stats_table(soup, table_id)
+            career_stats = _get_stats_table(soup, table_id, footer=True)
+            all_stats_dict = self._combine_season_stats(
+                table_rows, career_stats, all_stats_dict, 'detailed' in table_id
+            )
         return all_stats_dict
 
-    def _parse_player_information(self, player_info):
-        """
-        Parse general player information.
-
-        Parse general player information such as height, weight, and name. The
-        attribute for the requested field will be set with the value prior to
-        returning.
+    def _parse_player_information(self, soup):
+        """Parse general player information.
 
         Parameters
         ----------
-        player_info : PyQuery object
-            A PyQuery object containing the HTML from the player's stats page.
+        soup : BeautifulSoup
+            Parsed HTML of the player's stats page.
         """
-        for field in ['_height', '_weight', '_name']:
-            short_field = str(field)[1:]
-            value = utils._parse_field(PLAYER_SCHEME, player_info, short_field)
-            setattr(self, field, value)
+        for field in ['name', 'height', 'weight']:
+            value = _parse_field(PLAYER_SCHEME, soup, field)
+            setattr(self, f'_{field}', value)
 
-    def _parse_birth_date(self, player_info):
-        """
-        Parse the player's birth date.
-
-        Parse the player's birth date which is embedded in an attribute in
-        their birth tag on the HTML page.
+    def _parse_birth_date(self, soup):
+        """Parse the player's birth date.
 
         Parameters
         ----------
-        player_info : PyQuery object
-            A PyQuery object containing the HTML from the player's stats page.
+        soup : BeautifulSoup
+            Parsed HTML of the player's stats page.
         """
-        birth_date = player_info('span#necro-birth').attr('data-birth')
-        setattr(self, '_birth_date', birth_date)
+        birth_span = soup.find('span', id='necro-birth')
+        birth_date = birth_span['data-birth'] if birth_span and 'data-birth' in birth_span.attrs else None
+        self._birth_date = birth_date
 
     def _pull_player_data(self):
-        """
-        Pull and aggregate all player information.
-
-        Pull the player's HTML stats page and parse unique properties, such as
-        the player's height, weight, and name. Next, combine all stats for all
-        seasons plus the player's career stats into a single object which can
-        easily be iterated upon.
+        """Pull and aggregate player data.
 
         Returns
         -------
-        dictionary
-            Returns a dictionary of the player's combined stats where each key
-            is a string of the season and the value is the seaon's associated
-            stats.
+        dict or None
+            Dictionary of player stats by season, or None if data cannot be fetched.
         """
-        player_info = self._retrieve_html_page()
-        if not player_info:
-            return
-        all_stats = self._combine_all_stats(player_info)
-        self._parse_player_information(player_info)
-        self._parse_birth_date(player_info)
-        setattr(self, '_season', list(all_stats.keys()))
+        url = self._build_url()
+        soup = _fetch_html(url)
+        if not soup or 'Page Not Found (404 error)' in str(soup):
+            return None
+        all_stats = self._combine_all_stats(soup)
+        if not all_stats:
+            return None
+        self._parse_player_information(soup)
+        self._parse_birth_date(soup)
+        seasons = sorted([s for s in all_stats if s != 'Career'] + ['Career'])
+        self._season = seasons
+        self._index = seasons.index('Career') if 'Career' in seasons else 0
+        for season in seasons:
+            row = BeautifulSoup(all_stats[season]['data'], 'lxml').find('tr')
+            if not row:
+                continue
+            for field in self.__dict__:
+                if not field.startswith('_') or field in ['_index', '_detailed_stats_index', '_most_recent_season', '_detailed_stats_seasons', '_player_id', '_season', '_name', '_height', '_weight', '_birth_date']:
+                    continue
+                short_field = field.lstrip('_')
+                value = _parse_field(PLAYER_SCHEME, row, short_field)
+                getattr(self, field).append(value)
         return all_stats
 
-    def _find_initial_index(self):
-        """
-        Find the index of the career stats.
-
-        When the Player class is instantiated, the default stats to pull are
-        the player's career stats. Upon being called, the index of the 'Career'
-        element should be the index value.
-        """
-        index = 0
-        for season in self._season or season == 'Career':
-            if season == 'Career':
-                self._index = index
-                break
-            index += 1
-
     def __call__(self, requested_season=''):
-        """
-        Specify a different season to pull stats from.
-
-        A different season can be requested by passing the season string, such
-        as '2017' to the class instance.
+        """Query stats for a specific season.
 
         Parameters
         ----------
-        requested_season : string (optional)
-            A string of the requested season to query, such as '2017'. If left
-            blank or 'Career' is passed, the career stats will be used for
-            stats queries.
+        requested_season : str, optional
+            The season to query ('YYYY' or 'Career'). Defaults to 'Career'.
 
         Returns
         -------
-        Player class instance
-            Returns the class instance with the updated stats being referenced.
+        Player
+            Self, with updated index for the requested season.
         """
-        if requested_season.lower() == 'career' or \
-           requested_season == '':
-            requested_season = 'Career'
-        index = 0
-        if not self._season:
-            return self
-        for season in self._season:
-            if season == requested_season:
-                self._index = index
-                break
-            index += 1
-        detailed_index = 0
-        if not self._detailed_stats_seasons:
-            return self
-        for season in self._detailed_stats_seasons:
-            if season == requested_season:
-                self._detailed_stats_index = detailed_index
-                break
-            detailed_index += 1
+        requested_season = 'Career' if requested_season.lower() == 'career' or not requested_season else requested_season
+        if requested_season in self._season:
+            self._index = self._season.index(requested_season)
+        if requested_season in self._detailed_stats_seasons:
+            self._detailed_stats_index = self._detailed_stats_seasons.index(requested_season)
         return self
 
     def _dataframe_fields(self):
-        """
-        Creates a dictionary of all fields to include with DataFrame.
-
-        With the result of the calls to class properties changing based on the
-        class index value, the dictionary should be regenerated every time the
-        index is changed when the dataframe property is requested.
+        """Create dictionary of fields for DataFrame.
 
         Returns
         -------
-        dictionary
-            Returns a dictionary where the keys are the shortened ``string``
-            attribute names and the values are the actual value for each
-            attribute for the specified index.
+        dict
+            Dictionary of attribute names and values for the current season.
         """
-        fields_to_include = {
-            'adjusted_net_yards_per_attempt_index':
-            self.adjusted_net_yards_per_attempt_index,
-            'adjusted_net_yards_per_pass_attempt':
-            self.adjusted_net_yards_per_pass_attempt,
-            'adjusted_yards_per_attempt': self.adjusted_yards_per_attempt,
-            'adjusted_yards_per_attempt_index':
-            self.adjusted_yards_per_attempt_index,
-            'all_purpose_yards': self.all_purpose_yards,
-            'approximate_value': self.approximate_value,
-            'assists_on_tackles': self.assists_on_tackles,
-            'attempted_passes': self.attempted_passes,
+        fields = {
+            'player_id': self.player_id,
+            'name': self.name,
+            'season': self.season,
+            'team_abbreviation': self.team_abbreviation,
+            'position': self.position,
+            'height': self.height,
+            'weight': self.weight,
             'birth_date': self.birth_date,
-            'blocked_punts': self.blocked_punts,
-            'catch_percentage': self.catch_percentage,
-            'completed_passes': self.completed_passes,
-            'completion_percentage_index': self.completion_percentage_index,
-            'drop_percentage': self.drop_percentage,
-            'dropped_passes': self.dropped_passes,
-            'espn_qbr': self.espn_qbr,
-            'extra_point_percentage': self.extra_point_percentage,
-            'extra_points_attempted': self.extra_points_attempted,
-            'extra_points_made': self.extra_points_made,
-            'field_goal_percentage': self.field_goal_percentage,
-            'field_goals_attempted': self.field_goals_attempted,
-            'field_goals_made': self.field_goals_made,
-            'fifty_plus_yard_field_goal_attempts':
-            self.fifty_plus_yard_field_goal_attempts,
-            'fifty_plus_yard_field_goals_made':
-            self.fifty_plus_yard_field_goals_made,
-            'first_downs_receiving': self.first_downs_receiving,
-            'first_downs_rushing': self.first_downs_rushing,
-            'fourth_quarter_comebacks': self.fourth_quarter_comebacks,
-            'fourty_to_fourty_nine_yard_field_goal_attempts':
-            self.fourty_to_fourty_nine_yard_field_goal_attempts,
-            'fourty_to_fourty_nine_yard_field_goals_made':
-            self.fourty_to_fourty_nine_yard_field_goals_made,
-            'fumbles': self.fumbles,
-            'fumbles_forced': self.fumbles_forced,
-            'fumbles_recovered': self.fumbles_recovered,
-            'fumbles_recovered_for_touchdown':
-            self.fumbles_recovered_for_touchdown,
-            'game_winning_drives': self.game_winning_drives,
             'games': self.games,
             'games_started': self.games_started,
-            'height': self.height,
-            'interception_percentage': self.interception_percentage,
-            'interception_percentage_index':
-            self.interception_percentage_index,
-            'interceptions': self.interceptions,
-            'interceptions_returned_for_touchdown':
-            self.interceptions_returned_for_touchdown,
-            'interceptions_thrown': self.interceptions_thrown,
-            'kickoff_return_touchdown': self.kickoff_return_touchdown,
-            'kickoff_return_yards': self.kickoff_return_yards,
-            'kickoff_returns': self.kickoff_returns,
-            'less_than_nineteen_yards_field_goal_attempts':
-            self.less_than_nineteen_yards_field_goal_attempts,
-            'less_than_nineteen_yards_field_goals_made':
-            self.less_than_nineteen_yards_field_goals_made,
-            'longest_field_goal_made': self.longest_field_goal_made,
-            'longest_interception_return': self.longest_interception_return,
-            'longest_kickoff_return': self.longest_kickoff_return,
-            'longest_pass': self.longest_pass,
-            'longest_punt': self.longest_punt,
-            'longest_punt_return': self.longest_punt_return,
-            'longest_reception': self.longest_reception,
-            'longest_rush': self.longest_rush,
-            'name': self.name,
-            'net_yards_per_attempt_index': self.net_yards_per_attempt_index,
-            'net_yards_per_pass_attempt': self.net_yards_per_pass_attempt,
-            'passer_rating_index': self.passer_rating_index,
-            'passes_defended': self.passes_defended,
-            'passing_completion': self.passing_completion,
-            'passing_touchdown_percentage': self.passing_touchdown_percentage,
-            'passing_touchdowns': self.passing_touchdowns,
-            'passing_yards': self.passing_yards,
-            'passing_yards_per_attempt': self.passing_yards_per_attempt,
-            'player_id': self.player_id,
-            'position': self.position,
-            'punt_return_touchdown': self.punt_return_touchdown,
-            'punt_return_yards': self.punt_return_yards,
-            'punt_returns': self.punt_returns,
-            'punts': self.punts,
+            'approximate_value': self.approximate_value,
             'qb_record': self.qb_record,
-            'quarterback_rating': self.quarterback_rating,
-            'receiving_broken_tackles': self.receiving_broken_tackles,
-            'receiving_touchdowns': self.receiving_touchdowns,
-            'receiving_yards': self.receiving_yards,
-            'receiving_yards_after_catch': self.receiving_yards_after_catch,
-            'receiving_yards_after_catch_per_reception':
-            self.receiving_yards_after_catch_per_reception,
-            'receiving_yards_before_catch': self.receiving_yards_before_catch,
-            'receiving_yards_before_catch_per_reception':
-            self.receiving_yards_before_catch_per_reception,
-            'receiving_yards_per_game': self.receiving_yards_per_game,
-            'receiving_yards_per_reception':
-            self.receiving_yards_per_reception,
-            'receptions': self.receptions,
-            'receptions_per_broken_tackle': self.receptions_per_broken_tackle,
-            'receptions_per_game': self.receptions_per_game,
-            'rush_attempts': self.rush_attempts,
-            'rush_attempts_per_broken_tackle':
-            self.rush_attempts_per_broken_tackle,
-            'rush_attempts_per_game': self.rush_attempts_per_game,
-            'rush_broken_tackles': self.rush_broken_tackles,
-            'rush_touchdowns': self.rush_touchdowns,
-            'rush_yards': self.rush_yards,
-            'rush_yards_after_contact': self.rush_yards_after_contact,
-            'rush_yards_after_contact_per_attempt':
-            self.rush_yards_after_contact_per_attempt,
-            'rush_yards_before_contact': self.rush_yards_before_contact,
-            'rush_yards_before_contact_per_attempt':
-            self.rush_yards_before_contact_per_attempt,
-            'rush_yards_per_attempt': self.rush_yards_per_attempt,
-            'rush_yards_per_game': self.rush_yards_per_game,
-            'rushing_and_receiving_touchdowns':
-            self.rushing_and_receiving_touchdowns,
-            'sack_percentage': self.sack_percentage,
-            'sack_percentage_index': self.sack_percentage_index,
-            'sacks': self.sacks,
-            'safeties': self.safeties,
-            'season': self.season,
-            'tackles': self.tackles,
-            'team_abbreviation': self.team_abbreviation,
-            'thirty_to_thirty_nine_yard_field_goal_attempts':
-            self.thirty_to_thirty_nine_yard_field_goal_attempts,
-            'thirty_to_thirty_nine_yard_field_goals_made':
-            self.thirty_to_thirty_nine_yard_field_goals_made,
-            'times_pass_target': self.times_pass_target,
-            'times_sacked': self.times_sacked,
-            'total_punt_yards': self.total_punt_yards,
-            'touchdown_percentage_index': self.touchdown_percentage_index,
-            'touches': self.touches,
-            'twenty_to_twenty_nine_yard_field_goal_attempts':
-            self.twenty_to_twenty_nine_yard_field_goal_attempts,
-            'twenty_to_twenty_nine_yard_field_goals_made':
-            self.twenty_to_twenty_nine_yard_field_goals_made,
-            'weight': self.weight,
-            'yards_from_scrimmage': self.yards_from_scrimmage,
-            'yards_lost_to_sacks': self.yards_lost_to_sacks,
-            'yards_per_attempt_index': self.yards_per_attempt_index,
+            'completed_passes': self.completed_passes,
+            'attempted_passes': self.attempted_passes,
+            'passing_completion': self.passing_completion,
+            'passing_yards': self.passing_yards,
+            'passing_touchdowns': self.passing_touchdowns,
+            'passing_touchdown_percentage': self.passing_touchdown_percentage,
+            'interceptions_thrown': self.interceptions_thrown,
+            'interception_percentage': self.interception_percentage,
+            'longest_pass': self.longest_pass,
+            'passing_yards_per_attempt': self.passing_yards_per_attempt,
+            'adjusted_yards_per_attempt': self.adjusted_yards_per_attempt,
             'yards_per_completed_pass': self.yards_per_completed_pass,
             'yards_per_game_played': self.yards_per_game_played,
-            'yards_per_kickoff_return': self.yards_per_kickoff_return,
-            'yards_per_punt': self.yards_per_punt,
-            'yards_per_punt_return': self.yards_per_punt_return,
+            'quarterback_rating': self.quarterback_rating,
+            'espn_qbr': self.espn_qbr,
+            'times_sacked': self.times_sacked,
+            'yards_lost_to_sacks': self.yards_lost_to_sacks,
+            'net_yards_per_pass_attempt': self.net_yards_per_pass_attempt,
+            'adjusted_net_yards_per_pass_attempt': self.adjusted_net_yards_per_pass_attempt,
+            'sack_percentage': self.sack_percentage,
+            'fourth_quarter_comebacks': self.fourth_quarter_comebacks,
+            'game_winning_drives': self.game_winning_drives,
+            'yards_per_attempt_index': self.yards_per_attempt_index,
+            'net_yards_per_attempt_index': self.net_yards_per_attempt_index,
+            'adjusted_yards_per_attempt_index': self.adjusted_yards_per_attempt_index,
+            'adjusted_net_yards_per_attempt_index': self.adjusted_net_yards_per_attempt_index,
+            'completion_percentage_index': self.completion_percentage_index,
+            'touchdown_percentage_index': self.touchdown_percentage_index,
+            'interception_percentage_index': self.interception_percentage_index,
+            'sack_percentage_index': self.sack_percentage_index,
+            'passer_rating_index': self.passer_rating_index,
+            'rush_attempts': self.rush_attempts,
+            'rush_yards': self.rush_yards,
+            'rush_touchdowns': self.rush_touchdowns,
+            'longest_rush': self.longest_rush,
+            'rush_yards_per_attempt': self.rush_yards_per_attempt,
+            'rush_yards_per_game': self.rush_yards_per_game,
+            'rush_attempts_per_game': self.rush_attempts_per_game,
+            'first_downs_rushing': self.first_downs_rushing,
+            'rush_yards_before_contact': self.rush_yards_before_contact,
+            'rush_yards_before_contact_per_attempt': self.rush_yards_before_contact_per_attempt,
+            'rush_yards_after_contact': self.rush_yards_after_contact,
+            'rush_yards_after_contact_per_attempt': self.rush_yards_after_contact_per_attempt,
+            'rush_broken_tackles': self.rush_broken_tackles,
+            'rush_attempts_per_broken_tackle': self.rush_attempts_per_broken_tackle,
+            'times_pass_target': self.times_pass_target,
+            'receptions': self.receptions,
+            'receiving_yards': self.receiving_yards,
+            'receiving_yards_per_reception': self.receiving_yards_per_reception,
+            'receiving_touchdowns': self.receiving_touchdowns,
+            'longest_reception': self.longest_reception,
+            'receptions_per_game': self.receptions_per_game,
+            'receiving_yards_per_game': self.receiving_yards_per_game,
+            'catch_percentage': self.catch_percentage,
+            'first_downs_receiving': self.first_downs_receiving,
+            'receiving_yards_before_catch': self.receiving_yards_before_catch,
+            'receiving_yards_before_catch_per_reception': self.receiving_yards_before_catch_per_reception,
+            'receiving_yards_after_catch': self.receiving_yards_after_catch,
+            'receiving_yards_after_catch_per_reception': self.receiving_yards_after_catch_per_reception,
+            'receiving_broken_tackles': self.receiving_broken_tackles,
+            'receptions_per_broken_tackle': self.receptions_per_broken_tackle,
+            'dropped_passes': self.dropped_passes,
+            'drop_percentage': self.drop_percentage,
+            'touches': self.touches,
             'yards_per_touch': self.yards_per_touch,
+            'yards_from_scrimmage': self.yards_from_scrimmage,
+            'rushing_and_receiving_touchdowns': self.rushing_and_receiving_touchdowns,
+            'fumbles': self.fumbles,
+            'punt_returns': self.punt_returns,
+            'punt_return_yards': self.punt_return_yards,
+            'punt_return_touchdown': self.punt_return_touchdown,
+            'longest_punt_return': self.longest_punt_return,
+            'yards_per_punt_return': self.yards_per_punt_return,
+            'kickoff_returns': self.kickoff_returns,
+            'kickoff_return_yards': self.kickoff_return_yards,
+            'kickoff_return_touchdown': self.kickoff_return_touchdown,
+            'longest_kickoff_return': self.longest_kickoff_return,
+            'yards_per_kickoff_return': self.yards_per_kickoff_return,
+            'all_purpose_yards': self.all_purpose_yards,
+            'less_than_nineteen_yards_field_goal_attempts': self.less_than_nineteen_yards_field_goal_attempts,
+            'less_than_nineteen_yards_field_goals_made': self.less_than_nineteen_yards_field_goals_made,
+            'twenty_to_twenty_nine_yard_field_goal_attempts': self.twenty_to_twenty_nine_yard_field_goal_attempts,
+            'twenty_to_twenty_nine_yard_field_goals_made': self.twenty_to_twenty_nine_yard_field_goals_made,
+            'thirty_to_thirty_nine_yard_field_goal_attempts': self.thirty_to_thirty_nine_yard_field_goal_attempts,
+            'thirty_to_thirty_nine_yard_field_goals_made': self.thirty_to_thirty_nine_yard_field_goals_made,
+            'forty_to_forty_nine_yard_field_goal_attempts': self.forty_to_forty_nine_yard_field_goal_attempts,
+            'forty_to_forty_nine_yard_field_goals_made': self.forty_to_forty_nine_yard_field_goals_made,
+            'fifty_plus_yard_field_goal_attempts': self.fifty_plus_yard_field_goal_attempts,
+            'fifty_plus_yard_field_goals_made': self.fifty_plus_yard_field_goals_made,
+            'field_goals_attempted': self.field_goals_attempted,
+            'field_goals_made': self.field_goals_made,
+            'longest_field_goal_made': self.longest_field_goal_made,
+            'field_goal_percentage': self.field_goal_percentage,
+            'extra_points_attempted': self.extra_points_attempted,
+            'extra_points_made': self.extra_points_made,
+            'extra_point_percentage': self.extra_point_percentage,
+            'punts': self.punts,
+            'total_punt_yards': self.total_punt_yards,
+            'longest_punt': self.longest_punt,
+            'blocked_punts': self.blocked_punts,
+            'interceptions': self.interceptions,
+            'yards_returned_from_interception': self.yards_returned_from_interception,
+            'interceptions_returned_for_touchdown': self.interceptions_returned_for_touchdown,
+            'longest_interception_return': self.longest_interception_return,
+            'passes_defended': self.passes_defended,
+            'fumbles_forced': self.fumbles_forced,
+            'fumbles_recovered': self.fumbles_recovered,
             'yards_recovered_from_fumble': self.yards_recovered_from_fumble,
-            'yards_returned_from_interception':
-            self.yards_returned_from_interception
+            'fumbles_recovered_for_touchdown': self.fumbles_recovered_for_touchdown,
+            'sacks': self.sacks,
+            'tackles': self.tackles,
+            'assists_on_tackles': self.assists_on_tackles,
+            'safeties': self.safeties
         }
-        return fields_to_include
+        return fields
 
     @property
     def dataframe(self):
+        """Return a pandas DataFrame of player stats.
+
+        Returns
+        -------
+        pandas.DataFrame or None
+            DataFrame of stats for all seasons, indexed by season, or None if no seasons.
         """
-        Returns a ``pandas DataFrame`` containing all other relevant class
-        properties and values where each index is a different season plus the
-        career stats.
-        """
-        temp_index = self._index
-        rows = []
-        indices = []
         if not self._season:
             return None
+        rows = []
+        indices = []
+        temp_index = self._index
         for season in self._season:
             self._index = self._season.index(season)
             rows.append(self._dataframe_fields())
             indices.append(season)
         self._index = temp_index
-        return pd.DataFrame(rows, index=[indices])
+        return pd.DataFrame(rows, index=indices)
 
     @property
     def season(self):
+        """Return the current season.
+
+        Returns
+        -------
+        str
+            Season in 'YYYY' format or 'Career'.
         """
-        Returns a ``string`` of the season in the format 'YYYY', such as
-        '2017'. If no season was requested, the career stats will be returned
-        for the player and the season will default to 'Career'.
-        """
-        return self._season[self._index]
+        return self._season[self._index] if self._season else 'Career'
 
     @property
     def team_abbreviation(self):
+        """Return the team abbreviation.
+
+        Returns
+        -------
+        str or None
+            Team's 3-letter abbreviation (e.g., 'NOR').
         """
-        Returns a ``string`` of the team's abbreviation, such as 'NOR' for the
-        New Orleans Saints.
-        """
-        return self._team_abbreviation[self._index]
+        return self._team_abbreviation[self._index] if self._team_abbreviation else None
 
     @property
     def position(self):
+        """Return the player's primary position.
+
+        Returns
+        -------
+        str or None
+            Primary position.
         """
-        Returns a ``string`` of the player's primary position.
-        """
-        return self._position[self._index]
+        return self._position[self._index] if self._position else None
 
     @property
     def height(self):
-        """
-        Returns a ``string`` of the player's height in the format
-        "feet-inches".
+        """Return the player's height.
+
+        Returns
+        -------
+        str or None
+            Height in 'feet-inches' format.
         """
         return self._height
 
     @property
     def weight(self):
+        """Return the player's weight.
+
+        Returns
+        -------
+        int or None
+            Weight in pounds.
         """
-        Returns an ``int`` of the player's weight in pounds.
-        """
-        if not self._weight:
-            return None
-        return int(self._weight.replace('lb', ''))
+        return int(self._weight.replace('lb', '')) if self._weight else None
 
     @property
     def birth_date(self):
-        """
-        Returns a ``datetime`` object of the day and year the player was born.
+        """Return the player's birth date.
+
+        Returns
+        -------
+        str or None
+            Birth date in 'YYYY-MM-DD' format.
         """
         return self._birth_date
 
-    @_int_property_decorator
+    @int_property_decorator
     def games(self):
-        """
-        Returns an ``int`` of the number of games the player participated in.
+        """Return the number of games played.
+
+        Returns
+        -------
+        int or None
+            Number of games participated in.
         """
         return self._games
 
-    @_int_property_decorator
+    @int_property_decorator
     def games_started(self):
-        """
-        Returns an ``int`` of the number of games the player started.
+        """Return the number of games started.
+
+        Returns
+        -------
+        int or None
+            Number of games started.
         """
         return self._games_started
 
-    @_int_property_decorator
+    @int_property_decorator
     def approximate_value(self):
-        """
-        Returns an ``int`` of the player's approximate value which is a
-        singular number used to compare players across seasons and positions,
-        but is only intended to be a rough estimate.
+        """Return the approximate value.
+
+        Returns
+        -------
+        int or None
+            Approximate value score.
         """
         return self._approximate_value
 
     @property
     def qb_record(self):
-        """
-        Returns a ``string`` of the player's quarterback record as a starter in
-        the format 'W-L-T'.
-        """
-        return self._qb_record[self._index]
+        """Return the quarterback record.
 
-    @_int_property_decorator
-    def completed_passes(self):
+        Returns
+        -------
+        str or None
+            Record in 'W-L-T' format.
         """
-        Returns an ``int`` of the number of completed passes the player threw.
+        return self._qb_record[self._index] if self._qb_record else None
+
+    @int_property_decorator
+    def completed_passes(self):
+        """Return the number of completed passes.
+
+        Returns
+        -------
+        int or None
+            Number of passes completed.
         """
         return self._completed_passes
 
-    @_int_property_decorator
+    @int_property_decorator
     def attempted_passes(self):
-        """
-        Returns an ``int`` of the number of passes the player attempted.
+        """Return the number of attempted passes.
+
+        Returns
+        -------
+        int or None
+            Number of passes attempted.
         """
         return self._attempted_passes
 
-    @_float_property_decorator
+    @float_property_decorator
     def passing_completion(self):
-        """
-        Returns a ``float`` of the percentage of passes that were caught by a
-        receiver. Percentage ranges from 0-100.
+        """Return the passing completion percentage.
+
+        Returns
+        -------
+        float or None
+            Percentage of passes completed (0-100).
         """
         return self._passing_completion
 
-    @_int_property_decorator
+    @int_property_decorator
     def passing_yards(self):
-        """
-        Returns an ``int`` of the number of yards receivers have gained as a
-        result of the player's passes.
+        """Return the passing yards.
+
+        Returns
+        -------
+        int or None
+            Total passing yards.
         """
         return self._passing_yards
 
-    @_int_property_decorator
+    @int_property_decorator
     def passing_touchdowns(self):
-        """
-        Returns an ``int`` of the number of touchdowns passes the player has
-        thrown.
+        """Return the passing touchdowns.
+
+        Returns
+        -------
+        int or None
+            Number of touchdown passes.
         """
         return self._passing_touchdowns
 
-    @_float_property_decorator
+    @float_property_decorator
     def passing_touchdown_percentage(self):
-        """
-        Returns a ``float`` of the percentage of total passes that are
-        touchdowns. Percentage ranges from 0-100.
+        """Return the passing touchdown percentage.
+
+        Returns
+        -------
+        float or None
+            Percentage of passes resulting in touchdowns (0-100).
         """
         return self._passing_touchdown_percentage
 
-    @_int_property_decorator
+    @int_property_decorator
     def interceptions_thrown(self):
-        """
-        Returns an ``int`` of the number of interceptions the player has
-        thrown.
+        """Return the number of interceptions thrown.
+
+        Returns
+        -------
+        int or None
+            Number of interceptions.
         """
         return self._interceptions_thrown
 
-    @_float_property_decorator
+    @float_property_decorator
     def interception_percentage(self):
-        """
-        Returns a ``float`` of the percentage of passes the player throws that
-        are intercepted. Percentage ranges from 0-100.
+        """Return the interception percentage.
+
+        Returns
+        -------
+        float or None
+            Percentage of passes intercepted (0-100).
         """
         return self._interception_percentage
 
-    @_int_property_decorator
+    @int_property_decorator
     def longest_pass(self):
-        """
-        Returns an ``int`` of the longest completed pass the player threw.
+        """Return the longest pass.
+
+        Returns
+        -------
+        int or None
+            Yards of the longest completed pass.
         """
         return self._longest_pass
 
-    @_float_property_decorator
+    @float_property_decorator
     def passing_yards_per_attempt(self):
-        """
-        Returns a ``float`` of the number of yards gained per passing attempt.
+        """Return the yards per pass attempt.
+
+        Returns
+        -------
+        float or None
+            Average yards per pass attempt.
         """
         return self._passing_yards_per_attempt
 
-    @_float_property_decorator
+    @float_property_decorator
     def adjusted_yards_per_attempt(self):
-        """
-        Returns a ``float`` of the adjusted number of yards gained per passing
-        attempt, equal to (yards + 20 * pass_touchdowns - 45 * interceptions) /
-        pass_attempts.
+        """Return the adjusted yards per attempt.
+
+        Returns
+        -------
+        float or None
+            Adjusted yards per pass attempt.
         """
         return self._adjusted_yards_per_attempt
 
-    @_float_property_decorator
+    @float_property_decorator
     def yards_per_completed_pass(self):
-        """
-        Returns a ``float`` of the number of yards gained per completed pass.
+        """Return the yards per completed pass.
+
+        Returns
+        -------
+        float or None
+            Average yards per completed pass.
         """
         return self._yards_per_completed_pass
 
-    @_float_property_decorator
+    @float_property_decorator
     def yards_per_game_played(self):
-        """
-        Returns a ``float`` of the number of passing yards gained per gamed.
+        """Return the passing yards per game.
+
+        Returns
+        -------
+        float or None
+            Average passing yards per game.
         """
         return self._yards_per_game_played
 
-    @_float_property_decorator
+    @float_property_decorator
     def quarterback_rating(self):
-        """
-        Returns a ``float`` of the player's quarterback rating.
+        """Return the quarterback rating.
+
+        Returns
+        -------
+        float or None
+            Quarterback rating score.
         """
         return self._quarterback_rating
 
-    @_float_property_decorator
+    @float_property_decorator
     def espn_qbr(self):
-        """
-        Returns a ``float`` of the player's Total Quarterback Rating according
-        to ESPN.
+        """Return the ESPN QBR.
+
+        Returns
+        -------
+        float or None
+            ESPN Total Quarterback Rating.
         """
         return self._espn_qbr
 
-    @_int_property_decorator
+    @int_property_decorator
     def times_sacked(self):
-        """
-        Returns an ``int`` of the number of times the player was sacked as a
-        quarterback.
+        """Return the number of times sacked.
+
+        Returns
+        -------
+        int or None
+            Number of sacks as a quarterback.
         """
         return self._times_sacked
 
-    @_int_property_decorator
+    @int_property_decorator
     def yards_lost_to_sacks(self):
-        """
-        Returns an ``int`` of the number of yards lost as a result of sacks.
+        """Return the yards lost to sacks.
+
+        Returns
+        -------
+        int or None
+            Yards lost due to sacks.
         """
         return self._yards_lost_to_sacks
 
-    @_float_property_decorator
+    @float_property_decorator
     def net_yards_per_pass_attempt(self):
-        """
-        Returns a ``float`` of the net yards gained per pass attempt, equal to
-        (pass_yards - sack_yards) / (pass_attempts + times_sacked).
+        """Return the net yards per pass attempt.
+
+        Returns
+        -------
+        float or None
+            Net yards per pass attempt, including sacks.
         """
         return self._net_yards_per_pass_attempt
 
-    @_float_property_decorator
+    @float_property_decorator
     def adjusted_net_yards_per_pass_attempt(self):
-        """
-        Returns a ``float`` of the adjusted net yards gained per pass attempt,
-        equal to (pass_yards - sack_yards + (20 * pass_touchdowns) - (45 *
-        interceptions)) / (pass_attempts + times_sacked).
+        """Return the adjusted net yards per pass attempt.
+
+        Returns
+        -------
+        float or None
+            Adjusted net yards per pass attempt.
         """
         return self._adjusted_net_yards_per_pass_attempt
 
-    @_float_property_decorator
+    @float_property_decorator
     def sack_percentage(self):
-        """
-        Returns a ``float`` of the percentage of times sacked during a passing
-        attempt, equal to times_sacked / (pass_attempts + times_sacked).
-        Percentage ranges from 0-100.
+        """Return the sack percentage.
+
+        Returns
+        -------
+        float or None
+            Percentage of pass attempts resulting in sacks (0-100).
         """
         return self._sack_percentage
 
-    @_int_property_decorator
+    @int_property_decorator
     def fourth_quarter_comebacks(self):
-        """
-        Returns an ``int`` of the number of times the player has lead a team to
-        victory or a tie as a quarterback while the team trailed at the
-        beginning of the fourth quarter by scoring at the end of a drive.
+        """Return the number of fourth-quarter comebacks.
+
+        Returns
+        -------
+        int or None
+            Number of comebacks led in the fourth quarter.
         """
         return self._fourth_quarter_comebacks
 
-    @_int_property_decorator
+    @int_property_decorator
     def game_winning_drives(self):
-        """
-        Returns an ``int`` of the number of times the player has lead a drive
-        that resulted in a score in the fourth quarter while the team was
-        trailing.
+        """Return the number of game-winning drives.
+
+        Returns
+        -------
+        int or None
+            Number of game-winning drives led.
         """
         return self._game_winning_drives
 
-    @_int_property_decorator
+    @int_property_decorator
     def yards_per_attempt_index(self):
-        """
-        Returns an ``int`` comparing players by the average number of yards
-        gained per attempt where 100 denotes an average player in this category
-        and higher numbers are better.
+        """Return the yards per attempt index.
+
+        Returns
+        -------
+        int or None
+            Index comparing yards per attempt (100 is average).
         """
         return self._yards_per_attempt_index
 
-    @_int_property_decorator
+    @int_property_decorator
     def net_yards_per_attempt_index(self):
-        """
-        Returns an ``int`` comparing players by the net average yards gained
-        per attempt where 100 denotes an average player in this category and
-        higher numbers are better.
+        """Return the net yards per attempt index.
+
+        Returns
+        -------
+        int or None
+            Index comparing net yards per attempt.
         """
         return self._net_yards_per_attempt_index
 
-    @_int_property_decorator
+    @int_property_decorator
     def adjusted_yards_per_attempt_index(self):
-        """
-        Returns an ``int`` comparing players by the average adjusted yards
-        gained per attempt where 100 denotes an average player in this category
-        and higher numbers are better.
+        """Return the adjusted yards per attempt index.
+
+        Returns
+        -------
+        int or None
+            Index comparing adjusted yards per attempt.
         """
         return self._adjusted_yards_per_attempt_index
 
-    @_int_property_decorator
+    @int_property_decorator
     def adjusted_net_yards_per_attempt_index(self):
-        """
-        Returns an ``int`` comparing players by the net average adjusted yards
-        gained per attempt where 100 denotes an average player in this category
-        and higher numbers are better.
+        """Return the adjusted net yards per attempt index.
+
+        Returns
+        -------
+        int or None
+            Index comparing adjusted net yards per attempt.
         """
         return self._adjusted_net_yards_per_attempt_index
 
-    @_int_property_decorator
+    @int_property_decorator
     def completion_percentage_index(self):
-        """
-        Returns an ``int`` comparing players by their passing completion
-        percentage where 100 denotes an average player in this category and
-        higher numbers are better.
+        """Return the completion percentage index.
+
+        Returns
+        -------
+        int or None
+            Index comparing completion percentage.
         """
         return self._completion_percentage_index
 
-    @_int_property_decorator
+    @int_property_decorator
     def touchdown_percentage_index(self):
-        """
-        Returns an ``int`` comparing players by the percentage of their passes
-        that result in a touchdown where 100 denotes an average player in this
-        category and higher numbers are better.
+        """Return the touchdown percentage index.
+
+        Returns
+        -------
+        int or None
+            Index comparing touchdown percentage.
         """
         return self._touchdown_percentage_index
 
-    @_int_property_decorator
+    @int_property_decorator
     def interception_percentage_index(self):
-        """
-        Returns an ``int`` comparing players by the percentage of their passes
-        that are intercepted where 100 denotes an average player in this
-        category and higher numbers are better.
+        """Return the interception percentage index.
+
+        Returns
+        -------
+        int or None
+            Index comparing interception percentage.
         """
         return self._interception_percentage_index
 
-    @_int_property_decorator
+    @int_property_decorator
     def sack_percentage_index(self):
-        """
-        Returns an ``int`` comparing players by the percentage of plays that
-        end in the player being sacked where 100 denotes an average player in
-        this category and higher numbers are better.
+        """Return the sack percentage index.
+
+        Returns
+        -------
+        int or None
+            Index comparing sack percentage.
         """
         return self._sack_percentage_index
 
-    @_int_property_decorator
+    @int_property_decorator
     def passer_rating_index(self):
-        """
-        Returns an ``int`` comparing players by their quarterback rating where
-        100 denotes an average player in this category and higher numbers are
-        better.
+        """Return the passer rating index.
+
+        Returns
+        -------
+        int or None
+            Index comparing quarterback rating.
         """
         return self._passer_rating_index
 
-    @_int_property_decorator
+    @int_property_decorator
     def rush_attempts(self):
-        """
-        Returns an ``int`` of the number of rushing plays the player attempted.
+        """Return the number of rush attempts.
+
+        Returns
+        -------
+        int or None
+            Number of rushing plays attempted.
         """
         return self._rush_attempts
 
-    @_int_property_decorator
+    @int_property_decorator
     def rush_yards(self):
-        """
-        Returns an ``int`` of the number of rushing yards the player gained.
+        """Return the rushing yards.
+
+        Returns
+        -------
+        int or None
+            Total rushing yards.
         """
         return self._rush_yards
 
-    @_int_property_decorator
+    @int_property_decorator
     def rush_touchdowns(self):
-        """
-        Returns an ``int`` of the number of rushing touchdowns the player
-        scored.
+        """Return the rushing touchdowns.
+
+        Returns
+        -------
+        int or None
+            Number of rushing touchdowns.
         """
         return self._rush_touchdowns
 
-    @_int_property_decorator
+    @int_property_decorator
     def longest_rush(self):
-        """
-        Returns an ``int`` of the highest number of yards the player gained
-        during a single rushing attempt.
+        """Return the longest rush.
+
+        Returns
+        -------
+        int or None
+            Yards of the longest rush.
         """
         return self._longest_rush
 
-    @_float_property_decorator
+    @float_property_decorator
     def rush_yards_per_attempt(self):
-        """
-        Returns a ``float`` of the average number of yards gained per rushing
-        attempt.
+        """Return the yards per rush attempt.
+
+        Returns
+        -------
+        float or None
+            Average yards per rush.
         """
         return self._rush_yards_per_attempt
 
-    @_float_property_decorator
+    @float_property_decorator
     def rush_yards_per_game(self):
-        """
-        Returns a ``float`` of the average number of rushing yards gained per
-        game.
+        """Return the rushing yards per game.
+
+        Returns
+        -------
+        float or None
+            Average rushing yards per game.
         """
         return self._rush_yards_per_game
 
-    @_float_property_decorator
+    @float_property_decorator
     def rush_attempts_per_game(self):
-        """
-        Returns a ``float`` of the average number of rushing attempts the
-        player made per game.
+        """Return the rush attempts per game.
+
+        Returns
+        -------
+        float or None
+            Average rush attempts per game.
         """
         return self._rush_attempts_per_game
 
-    @_int_property_decorator
+    @int_property_decorator
     def first_downs_rushing(self):
-        """
-        Returns an ``int`` of the number of first downs the player has gained
-        from rush attempts.
+        """Return the rushing first downs.
+
+        Returns
+        -------
+        int or None
+            Number of first downs from rushing.
         """
         return self._first_downs_rushing
 
-    @_int_property_decorator
+    @int_property_decorator
     def rush_yards_before_contact(self):
-        """
-        Returns an ``int`` of the total number of yards the player has gained
-        prior to receiving contact on a rush.
+        """Return the yards before contact on rushes.
+
+        Returns
+        -------
+        int or None
+            Total yards before contact.
         """
         return self._rush_yards_before_contact
 
-    @_float_property_decorator
+    @float_property_decorator
     def rush_yards_before_contact_per_attempt(self):
-        """
-        Returns a ``float`` of the number of yards the player gains on average
-        prior to receiving contact on a rush.
+        """Return the yards before contact per rush.
+
+        Returns
+        -------
+        float or None
+            Average yards before contact per rush.
         """
         return self._rush_yards_before_contact_per_attempt
 
-    @_int_property_decorator
+    @int_property_decorator
     def rush_yards_after_contact(self):
-        """
-        Returns an ``int`` of the total number of yards the player has gained
-        after receiving contact on a rush.
+        """Return the yards after contact on rushes.
+
+        Returns
+        -------
+        int or None
+            Total yards after contact.
         """
         return self._rush_yards_after_contact
 
-    @_float_property_decorator
+    @float_property_decorator
     def rush_yards_after_contact_per_attempt(self):
-        """
-        Returns a ``float`` of the number of yards the player gains on average
-        after receiving contact on a rush.
+        """Return the yards after contact per rush.
+
+        Returns
+        -------
+        float or None
+            Average yards after contact per rush.
         """
         return self._rush_yards_after_contact_per_attempt
 
-    @_int_property_decorator
+    @int_property_decorator
     def rush_broken_tackles(self):
-        """
-        Returns an ``int`` of the number of tackles the player broke while
-        rushing.
+        """Return the number of broken tackles on rushes.
+
+        Returns
+        -------
+        int or None
+            Number of tackles broken.
         """
         return self._rush_broken_tackles
 
-    @_float_property_decorator
+    @float_property_decorator
     def rush_attempts_per_broken_tackle(self):
-        """
-        Returns a ``float`` of the number of tackles the player broke per rush.
+        """Return the rushes per broken tackle.
+
+        Returns
+        -------
+        float or None
+            Average rushes per broken tackle.
         """
         return self._rush_attempts_per_broken_tackle
 
-    @_int_property_decorator
+    @int_property_decorator
     def times_pass_target(self):
-        """
-        Returns an ``int`` of the number of times the player was the target of
-        a pass.
-        """
+        """Return the number of times targeted.
+
+        Returns
+        -------
+        return self._times_pass_target
+    """
         return self._times_pass_target
 
-    @_int_property_decorator
+    @int_property_decorator
     def receptions(self):
-        """
-        Returns an ``int`` of the number of receptions the player made.
+        """Return the number of receptions.
+
+        Returns
+        -------
+        int or float
+        Number of receptions.
         """
         return self._receptions
 
-    @_int_property_decorator
+    @int_property_decorator
     def receiving_yards(self):
-        """
-        Returns an ``int`` of the number of receiving yards the player gained.
+        """Return the receiving yards.
+
+        Returns
+        -------
+        int or None
+        Total receiving yards.
         """
         return self._receiving_yards
 
-    @_float_property_decorator
+    @float_property_decorator
     def receiving_yards_per_reception(self):
-        """
-        Returns a ``float`` of the average number of yards the player gained
-        per reception.
+        """Return the yards per reception.
+
+        Returns
+        -------
+        float or None
+        Average yards per reception.
         """
         return self._receiving_yards_per_reception
 
-    @_int_property_decorator
+    @int_property_decorator
     def receiving_touchdowns(self):
-        """
-        Returns an ``int`` of the number of touchdowns the player scored after
-        receiving a pass.
+        """Return the receiving touchdowns.
+
+        Returns
+        -------
+        int or None
+        Number of receiving touchdowns.
         """
         return self._receiving_touchdowns
 
-    @_int_property_decorator
+    @int_property_decorator
     def longest_reception(self):
-        """
-        Returns an ``int`` of the highest number of yards the player gained as
-        a result of a single reception.
+        """Return the longest reception.
+
+        Returns
+        -------
+        int or None
+        Yards of the longest reception.
         """
         return self._longest_reception
 
-    @_float_property_decorator
+    @float_property_decorator
     def receptions_per_game(self):
-        """
-        Returns a ``float`` of the average number of receptions the player
-        makes per game.
+        """Return the receptions per game.
+
+        Returns
+        -------
+        float or None
+        Average receptions per game.
         """
         return self._receptions_per_game
 
-    @_float_property_decorator
+    @float_property_decorator
     def receiving_yards_per_game(self):
-        """
-        Returns a ``float`` of the acerage number of receiving yards the player
-        gains per game.
+        """Return the receiving yards per game.
+
+        Returns
+        -------
+        float or None
+        Average receiving yards per game.
+        
         """
         return self._receiving_yards_per_game
 
-    @_float_property_decorator
+    @float_property_decorator
     def catch_percentage(self):
         """
-        Returns a ``float`` of the percentage of passes the player caught while
-        being the target of a pass. Percentage ranges from 0-100.
+        Return the catch percentage.
+
+        Returns
+        return
+            float or None
+            Percentage of passes caught (0-100).
         """
         return self._catch_percentage
 
-    @_int_property_decorator
+    @int_property_decorator
     def first_downs_receiving(self):
         """
-        Returns an ``int`` of the number of first downs the player has gained
-        from pass attempts.
+        Return the receiving first downs.
+
+        Returns
+        -------
+        int or None
+        Number of first downs from receiving.
         """
         return self._first_downs_receiving
 
-    @_int_property_decorator
+    @int_property_decorator
     def receiving_yards_before_catch(self):
         """
-        Returns an ``int`` of the total number of yards the player has gained
-        prior to catching a pass.
+        Return the yards before catch on receptions.
+
+        Returns
+        -------
+        int or None
+        Total yards before catch.
         """
         return self._receiving_yards_before_catch
 
-    @_float_property_decorator
+    @float_property_decorator
     def receiving_yards_before_catch_per_reception(self):
         """
-        Returns a ``float`` of the number of yards the player gains on average
-        prior to catching a pass.
+        Return the yards before catch per reception.
+
+        Returns
+        -------
+        float or None
+        Average yards before catch per reception.
         """
         return self._receiving_yards_before_catch_per_reception
 
-    @_int_property_decorator
+    @int_property_decorator
     def receiving_yards_after_catch(self):
         """
-        Returns an ``int`` of the total number of yards the player has gained
-        after catching a pass.
+        Return the yards after catch on receptions.
+
+        Returns
+        -------
+        int or None
+        Total yards after catch.
         """
         return self._receiving_yards_after_catch
 
-    @_float_property_decorator
+    @float_property_decorator
     def receiving_yards_after_catch_per_reception(self):
         """
-        Returns a ``float`` of the number of yards the player gains on average
-        after catching a pass.
+        Return the yards after catch per reception.
+
+        Returns
+        -------
+        float or None
+        Average yards after catch per reception.
         """
         return self._receiving_yards_after_catch_per_reception
 
-    @_int_property_decorator
+    @int_property_decorator
     def receiving_broken_tackles(self):
         """
-        Returns an ``int`` of the number of tackles the player has broken after
-        catching a pass.
+        Return a number of broken tackles on receptions.
+        Returns
+        -------
+        int or None
+        Number of tackles broken.
         """
         return self._receiving_broken_tackles
 
-    @_float_property_decorator
+    @float_property_decorator
     def receptions_per_broken_tackle(self):
         """
-        Returns a ``float`` of the number of receptions the player made per
-        broken tackle.
+        Return the receptions per broken tackle.
+
+        Returns
+        -------
+        float or None
+        Number of receptions per broken tackle.
         """
         return self._receptions_per_broken_tackle
 
-    @_int_property_decorator
+    @int_property_decorator
     def dropped_passes(self):
         """
-        Returns an ``int`` of the number of times the player has dropped a
-        pass.
+        Return a number of dropped passes.
+
+        Returns
+        -------
+        int or None
+        Number of passes dropped.
         """
         return self._dropped_passes
 
-    @_float_property_decorator
+    @float_property_decorator
     def drop_percentage(self):
         """
-        Returns a ``float`` of the percentage of passes the player has dropped.
-        Percentage ranges from 0-100.
+        Return the drop percentage.
+
+        Returns
+        -------
+        float or None
+        Percentage of passes dropped (0-100).
         """
         return self._drop_percentage
 
-    @_int_property_decorator
+    @int_property_decorator
     def touches(self):
         """
-        Returns an ``int`` of the combined number of rushing attempts and
-        receptions the player had.
+        Return a number of touches (rushes + receptions).
+
+        Returns
+        -------
+        int or None
+        Total touches.
         """
         return self._touches
 
-    @_float_property_decorator
+    @float_property_decorator
     def yards_per_touch(self):
         """
-        Returns a ``float`` of the average number of yards gained per rushing
-        attempt and/or reception.
+        Return a yards per touch.
+
+        Returns
+        -------
+        float or None
+        Average yards per touch.
         """
         return self._yards_per_touch
 
-    @_int_property_decorator
+    @int_property_decorator
     def yards_from_scrimmage(self):
         """
-        Returns an ``int`` of the total number of yards gained from scrimmage
-        for both rushing and receiving.
+        Return a yards from scrimmage.
+
+        Returns
+        -------
+        int or None
+        Total yards from rushing and receiving.
         """
         return self._yards_from_scrimmage
 
-    @_int_property_decorator
+    @int_property_decorator
     def rushing_and_receiving_touchdowns(self):
         """
-        Returns an ``int`` of the combined number of rushing and receiving
-        touchdowns the player scored.
+        Return a rushing and receiving touchdowns.
+
+        Returns
+        -------
+        int or None
+        Total rushing and receiving touchdowns.
         """
         return self._rushing_and_receiving_touchdowns
 
-    @_int_property_decorator
+    @int_property_decorator
     def fumbles(self):
         """
-        Returns an ``int`` of the number of times the player fumbled the ball.
+        Return a number of fumbles.
+
+        Returns
+        -------
+        int or None
+        Number of fumbles.
         """
         return self._fumbles
 
-    @_int_property_decorator
-    def punt_returns(self):
+    @int_property_decorator
+    def punt_punt_returns(self):
         """
-        Returns an ``int`` of the number of times a player returned a punt.
+        Return a number of punt returns.
+
+        Returns
+        -------
+        int or None
+        Number of punt returns.
         """
         return self._punt_returns
 
-    @_int_property_decorator
+    @int_property_decorator
     def punt_return_yards(self):
         """
-        Returns an ``int`` of the amount of yards the player gained while
-        returning a punt.
+        Return a punt return yards.
+
+        Returns
+        -------
+        int or None
+        Total punt return yards.
         """
         return self._punt_return_yards
 
-    @_int_property_decorator
+    @int_property_decorator
     def punt_return_touchdown(self):
         """
-        Returns an ``int`` of the number of punts the player returned for a
-        touchdown.
-        """
-        return self._punt_return_touchdown
+        Return a punt return touchdowns.
 
-    @_int_property_decorator
+        Returns
+        -------
+        int or None
+        Number of punt return touchdowns.
+        """
+        return self._return_touchdown
+
+    @int_property_decorator
     def longest_punt_return(self):
         """
-        Returns an ``int`` of the highest number of yards the player has gained
-        while returning a punt.
+        Return a longest punt return.
+
+        Returns
+        -------
+        int or None
+        Yards of longest punt return.
         """
         return self._longest_punt_return
 
-    @_float_property_decorator
+    @float_property_decorator
     def yards_per_punt_return(self):
         """
-        Returns a ``float`` of the average number of yards the player returned
-        per punt.
+        Return a yards per punt return.
+
+        Returns
+        -------
+        float or None
+        Average yards per punt return.
         """
         return self._yards_per_punt_return
 
-    @_int_property_decorator
+    @int_property_decorator
     def kickoff_returns(self):
         """
-        Returns an ``int`` of the number of kickoffs the player returned.
+        Return a number of kickoff returns.
+
+        Returns
+        -------
+        int or None
+        Number of kickoff returns.
         """
         return self._kickoff_returns
 
-    @_int_property_decorator
+    @int_property_decorator
     def kickoff_return_yards(self):
         """
-        Returns an ``int`` of the amount of yards the player gained while
-        returning a kickoff.
+        Return a kickoff return yards.
+
+        Returns
+        -------
+        int or None
+        Total kickoff return yards.
         """
         return self._kickoff_return_yards
 
-    @_int_property_decorator
+    @int_property_decorator
     def kickoff_return_touchdown(self):
         """
-        Returns an ``int`` of the number of kickoffs the player returned for a
-        touchdown.
+        Return a kickoff return touchdowns.
+
+        Returns
+        -------
+        int or None
+        Number of kickoff return touchdowns.
         """
         return self._kickoff_return_touchdown
 
-    @_int_property_decorator
+    @int_property_decorator
     def longest_kickoff_return(self):
         """
-        Returns an ``int`` of the highest number of yards the player has gained
-        while returning a kickoff.
+        Return the longest kickoff return.
+
+        Returns
+        -------
+            int or None
+            Yards of longest kickoff return.
         """
         return self._longest_kickoff_return
 
-    @_float_property_decorator
+    @float_property_decorator
     def yards_per_kickoff_return(self):
         """
-        Returns a ``float`` of the average number of yards the player returned
-        per kickoff.
+        Return the yards per kickoff return.
+
+        Returns
+        -------
+            float or None
+            Average yards per kickoff return.
         """
         return self._yards_per_kickoff_return
 
-    @_int_property_decorator
+    @int_property_decorator
     def all_purpose_yards(self):
         """
-        Returns an ``int`` of the number of all-purpose yards the player has
-        gained from receptions, rushes, and kickoff and punt returns.
+        Return the all-purpose yards.
+
+        Returns
+        -------
+        int or None
+        Total yards from receptions, rushes, and returns.
         """
         return self._all_purpose_yards
 
-    @_int_property_decorator
-    def less_than_nineteen_yards_field_goal_attempts(self):
+    @int_property_decorator
+    less_than_nineteen_yards_field_goal_attempts(self):
         """
-        Returns an ``int`` of the number of field goals the player attempted
-        from nineteen or fewer yards out.
+        Returns the number of field goal attempts from <19 yards.
+        Returns
+        -------
+            int or None
+            Number of field goal attempts from <19 yards.
         """
         return self._less_than_nineteen_yards_field_goal_attempts
 
-    @_int_property_decorator
+    @int_property_decorator
     def less_than_nineteen_yards_field_goals_made(self):
         """
-        Returns an ``int`` of the number of field goals the player made from
-        nineteen or fewer yards out.
+        Return the field goals made from <19 yards.
+
+        Returns
+        -------
+        int or None
+        Number of field goals made from <19 yards.
         """
         return self._less_than_nineteen_yards_field_goals_made
 
-    @_int_property_decorator
+    @int_property_decorator
     def twenty_to_twenty_nine_yard_field_goal_attempts(self):
         """
-        Returns an ``int`` of the number of field goals the player attempted
-        from twenty to twenty-nine yards out.
+        Return a number of field goal attempts from 20-29 yards.
+
+        Returns
+        -------
+        int or None
+        Number of field goal attempts from 20-29 yards.
         """
         return self._twenty_to_twenty_nine_yard_field_goal_attempts
 
-    @_int_property_decorator
+    @int_property_decorator
     def twenty_to_twenty_nine_yard_field_goals_made(self):
         """
-        Returns an ``int`` of the number of field goals the player made from
-        twenty to twenty-nine yards out.
+        Return a number of field goals made from 20-29 yards.
+
+        Returns
+        -------
+        int or None
+        Number of field goals made from 20-29 yards.
         """
         return self._twenty_to_twenty_nine_yard_field_goals_made
 
-    @_int_property_decorator
+    @int_property_decorator
     def thirty_to_thirty_nine_yard_field_goal_attempts(self):
         """
-        Returns an ``int`` of the number of field goals the player attempted
-        from thirty to thirty-nine yards out.
+        Return a number of field goal attempts from 30-39 yards.
+
+        Returns
+        -------
+        int or None
+        Number of field goal attempts from 30-39 yards.
         """
         return self._thirty_to_thirty_nine_yard_field_goal_attempts
 
-    @_int_property_decorator
+    @int_property_decorator
     def thirty_to_thirty_nine_yard_field_goals_made(self):
         """
-        Returns an ``int`` of the number of field goals the player made from
-        thirty to thirty-nine yards out.
+        Return a number of field goals made from 30-39 yards.
+
+        Returns
+        -------
+        int or None
+        Number of field goals made from 30-39 yards.
         """
         return self._thirty_to_thirty_nine_yard_field_goals_made
 
-    @_int_property_decorator
-    def fourty_to_fourty_nine_yard_field_goal_attempts(self):
+    @int_property_decorator
+    def forty_to_forty_nine_yard_field_goal_attempts(self):
         """
-        Returns an ``int`` of the number of field goals the player attempted
-        from fourty to fourty-nine yards out.
-        """
-        return self._fourty_to_fourty_nine_yard_field_goal_attempts
+        Return a number of field goal attempts from 40-49 yards.
 
-    @_int_property_decorator
-    def fourty_to_fourty_nine_yard_field_goals_made(self):
+        Returns
+        -------
+        int or None
+        Number of field goal attempts from 40-49 yards.
         """
-        Returns an ``int`` of the number of field goals the player made from
-        fourty to fourty-nine yards out.
-        """
-        return self._fourty_to_fourty_nine_yard_field_goals_made
+        return self._forty_to_forty_nine_yard_field_goal_attempts
 
-    @_int_property_decorator
+    @int_property_decorator
+    def forty_to_forty_nine_yard_field_goals_made(self):
+        """
+        Return a number of field goals made from 40-49 yards.
+
+        Returns
+        -------
+        int or None
+        Number of field goals made from 40-49 yards.
+        """
+        return self._forty_to_forty_nine_yard_field_goals_made
+
+    @int_property_decorator
     def fifty_plus_yard_field_goal_attempts(self):
         """
-        Returns an ``int`` of the number of field goals the player attempted
-        from fifty or more yards out.
+        Return a number of field goal attempts from 50+ yards.
+
+        Returns
+        -------
+        int or None
+        Number of field goal attempts from 50+ yards.
         """
         return self._fifty_plus_yard_field_goal_attempts
 
-    @_int_property_decorator
-    def fifty_plus_yard_field_goals_made(self):
+    @int_property_decorator
+    def fifty_plus_yards_field_goals_made(self):
         """
-        Returns an ``int`` of the number of field goals the player made from
-        fifty or more yards out.
+        Return a number of field goals made from 50+ yards.
+
+        Returns
+        -------
+        int or None
+        Number of field goals made from 50+ yards.
         """
         return self._fifty_plus_yard_field_goals_made
 
-    @_int_property_decorator
+    @int_property_decorator
     def field_goals_attempted(self):
         """
-        Returns an ``int`` of the total number of field goals the player
-        attempted from any distance.
+        Return a total number of field goal attempts.
+
+        Returns
+        -------
+        int or None
+        Total field goal attempts.
         """
         return self._field_goals_attempted
 
-    @_int_property_decorator
+    @int_property_decorator
     def field_goals_made(self):
         """
-        Returns an ``int`` of the total number of field goals the player made
-        from any distance.
+        Return a total number of field goals made.
+
+        Returns
+        -------
+        int or None
+        Total field goals made.
         """
         return self._field_goals_made
 
-    @_int_property_decorator
+    @int_property_decorator
     def longest_field_goal_made(self):
         """
-        Returns an ``int`` of the longest field goal the player made.
+        Return a longest field goal made.
+
+        Returns
+        -------
+        int or None
+        Yards of longest field goal made.
         """
         return self._longest_field_goal_made
 
-    @_float_property_decorator
+    @float_property_decorator
     def field_goal_percentage(self):
         """
-        Returns a ``float`` of the percentage of field goals the player made.
-        Percentage ranges from 0-100.
+        Return a field goal percentage.
+
+        Returns
+        -------
+        float or None
+        Percentage of field goals made (0-100).
         """
         return self._field_goal_percentage
 
-    @_int_property_decorator
+    @int_property_decorator
     def extra_points_attempted(self):
         """
-        Returns an ``int`` of the number of extra points the player attempted.
+        Return a number of extra point attempts.
+
+        Returns
+        -------
+        int or None
+        Number of extra points attempted.
         """
         return self._extra_points_attempted
 
-    @_int_property_decorator
+    @int_property_decorator
     def extra_points_made(self):
         """
-        Returns an ``int`` of the number of extra points the player made.
+        Return a number of extra points made.
+
+        Returns
+        -------
+        int or None
+        Number of extra points made.
         """
         return self._extra_points_made
 
-    @_float_property_decorator
+    @float_property_decorator
     def extra_point_percentage(self):
         """
-        Returns a ``float`` of the percentage of extra points the player made.
-        Percentage ranges from 0-100.
+        Return a extra point percentage.
+
+        Returns
+        -------
+        float or None
+        Percentage of extra points made (0-100).
         """
         return self._extra_point_percentage
 
-    @_int_property_decorator
+    @int_property_decorator
     def punts(self):
         """
-        Returns an ``int`` of the number of times the player punted the ball.
+        Return a number of punts.
+
+        Returns
+        -------
+        int or None
+        Number of punts.
         """
         return self._punts
 
-    @_int_property_decorator
+    @int_property_decorator
     def total_punt_yards(self):
         """
-        Returns an ``int`` of the total number of yards the player has punted
-        the ball.
+        Return a total punt yards.
+
+        Returns
+        -------
+        int or None
+        Total yards punted.
         """
         return self._total_punt_yards
 
-    @_int_property_decorator
+    @int_property_decorator
     def longest_punt(self):
         """
-        Returns an ``int`` of the longest punt the player has kicked.
+        Return a longest punt.
+
+        Returns
+        -------
+        int or None
+        Yards of longest punt.
         """
         return self._longest_punt
 
-    @_int_property_decorator
+    @int_property_decorator
     def blocked_punts(self):
         """
-        Returns an ``int`` of the number of the player's punts that have been
-        blocked.
+        Return a number of blocked punts.
+
+        Returns
+        -------
+        int or None
+        Number of punts blocked.
         """
         return self._blocked_punts
 
-    @_int_property_decorator
+    @int_property_decorator
     def interceptions(self):
         """
-        Returns an ``int`` of the number of times the player intercepted a
-        pass.
+        Return a number of interceptions.
+
+        Returns
+        -------
+        int or None
+        Number of passes intercepted.
         """
         return self._interceptions
 
-    @_int_property_decorator
+    @int_property_decorator
     def yards_returned_from_interception(self):
         """
-        Returns an ``int`` of the number of yards the player returned after
-        intercepting a pass.
+        Return a interception return yards.
+
+        Returns
+        -------
+        int or None
+        Yards from interception returns.
         """
         return self._yards_returned_from_interception
 
-    @_int_property_decorator
+    @int_property_decorator
     def interceptions_returned_for_touchdown(self):
         """
-        Returns an ``int`` of the number of touchdowns the player has scored
-        after intercepting a pass. Commonly referred to as a 'Pick-6'.
+        Return a number of interception return touchdowns.
+
+        Returns
+        -------
+        int or None
+        Number of touchdowns from interceptions.
         """
         return self._interceptions_returned_for_touchdown
 
-    @_int_property_decorator
+    @int_property_decorator
     def longest_interception_return(self):
         """
-        Returns an ``int`` of the most yards the player has returned after
-        intercepting a pass.
+        Return a longest interception return.
+
+        Returns
+        -------
+        int or None
+        Yards of longest interception return.
         """
         return self._longest_interception_return
 
-    @_int_property_decorator
+    @int_property_decorator
     def passes_defended(self):
         """
-        Returns an ``int`` of the number of passes the player has defended as a
-        defensive player.
+        Return a number of passes defended.
+
+        Returns
+        -------
+        int or None
+        Number of passes defended.
         """
         return self._passes_defended
 
-    @_int_property_decorator
+    @int_property_decorator
     def fumbles_forced(self):
         """
-        Returns an ``int`` of the number of times the player forced a fumble.
+        Return a number of fumbles forced.
+
+        Returns
+        -------
+        int or None
+        Number of fumbles forced.
         """
         return self._fumbles_forced
 
-    @_int_property_decorator
+    @int_property_decorator
     def fumbles_recovered(self):
         """
-        Returns an ``int`` of the number of fumbles the player has recovered.
+        Return a number of fumbles recovered.
+
+        Returns
+        -------
+        int or None
+        Number of fumbles recovered.
         """
         return self._fumbles_recovered
 
-    @_int_property_decorator
+    @int_property_decorator
     def yards_recovered_from_fumble(self):
         """
-        Returns an ``int`` of the number of yards the player gained after
-        recovering a fumble.
+        Return a fumble recovery yards.
+
+        Returns
+        -------
+        int or None
+        Yards from fumble recoveries.
         """
         return self._yards_recovered_from_fumble
 
-    @_int_property_decorator
+    @int_property_decorator
     def fumbles_recovered_for_touchdown(self):
         """
-        Returns an ``int`` of the number of touchdowns the player has scored
-        after recovering a fumble.
+        Return the number of fumble recovery touchdowns.
+
+        Returns
+        -------
+        int or None
+            Number of touchdowns from fumble recoveries.
         """
         return self._fumbles_recovered_for_touchdown
 
-    @_float_property_decorator
+    @float_property_decorator
     def sacks(self):
         """
-        Returns a ``float`` of the number of times the player sacked a
-        quarterback.
+        Return the number of sacks.
+
+        Returns
+        -------
+        float or None
+        Number of sacks (can be fractional).
         """
         return self._sacks
 
-    @_int_property_decorator
+    @int_property_decorator
     def tackles(self):
         """
-        Returns an ``int`` of the number of tackles the player made.
+        Return the number of tackles.
+
+        Returns
+        -------
+        int or None
+        Number of tackles.
         """
         return self._tackles
 
-    @_int_property_decorator
+    @int_property_decorator
     def assists_on_tackles(self):
         """
-        Returns an ``int`` of the number of assist the player made on tackles.
+        Return the number of tackle assists.
+
+        Returns
+        -------
+        int or None
+        Number of tackle assists.
         """
         return self._assists_on_tackles
 
-    @_int_property_decorator
+    @int_property_decorator
     def safeties(self):
         """
-        Returns an ``int`` of the number of safeties the player has scored.
+        Return the number of safeties.
+
+        Returns
+        -------
+        int or None
+        Number of safeties scored.
         """
         return self._safeties
 
-
 class Roster:
     """
-    Get stats for all players on a roster.
+    Representation of an NFL team's roster for a season.
 
-    Request a team's roster for a given season and create instances of the
-    Player class for each player, containing a detailed list of the player's
-    statistics and information.
+    Retrieves player and coach information for a team's roster from pro-football-reference.com.
 
     Parameters
     ----------
-    team : string
-        The team's abbreviation, such as 'NOR' for the New Orleans Saints.
-    year : string (optional)
-        The 4-digit year to pull the roster from, such as '2017'. If left
-        blank, defaults to the most recent season.
-    slim : boolean (optional)
-        Set to True to return a limited subset of player information including
-        the name and player ID for each player as opposed to all of their
-        respective stats which greatly reduces the time to return a response if
-        just the names and IDs are desired. Defaults to False.
+    team : str
+        The team's 3-letter abbreviation (e.g., 'KAN' for Kansas City Chiefs).
+    year : str or int, optional
+        The 4-digit year to check.
+ (e.g., '2023'). Defaults to the current or most recent season.
+    slim : bool, optional
+        If True, returns only player IDs and names. Defaults to False.
+
+    Attributes
+    ----------
+    team : str
+        The team's abbreviation.
+    players : list or dict
+        List of Player instances (if slim=False) or dict of player IDs to names (if slim=True).
+    coach : str or None
+        The head coach's name.
     """
-    def __init__(self, team, year=None, slim=False):
-        self._team = team
+    def __init__(self, team, year=None):
+, slim=False):
+        self._team = team.upper()
         self._slim = slim
         self._coach = None
-        if slim:
-            self._players = {}
-        else:
-            self._players = []
-
-        self._find_players_with_coach(year)
+        self._players = {} if slim else []
+        self._find_players(year)
 
     def __str__(self):
         """
-        Return the string representation of the class.
+        Return a string representation of the roster.
+
+        Returns
+        -------
+        str
+            Newline-separated list of player names and IDs.
         """
-        players = [f'{player.name} ({player.player_id})'.strip()
-                   for player in self._players]
-        return '\n'.join(players)
+        if self._slim:
+            return '\n'.join(f'{name} ({pid})' for pid, name in self._players.items())
+        return '\n'.join(str(player) for player in self._players)
 
     def __repr__(self):
         """
-        Return the string representation of the class.
+        Return string representation of the roster.
         """
         return self.__str__()
 
-    def _pull_team_page(self, url):
-        """
-        Download the team page.
-
-        Download the requested team's season page and create a PyQuery object.
-
-        Parameters
-        ----------
-        url : string
-            A string of the built URL for the requested team and season.
-
-        Returns
-        -------
-        PyQuery object
-            Returns a PyQuery object of the team's HTML page.
-        """
-        try:
-            return pq(utils._remove_html_comment_tags(pq(url=url)))
-        except HTTPError:
-            return None
-
     def _create_url(self, year):
         """
-        Build the team URL.
-
-        Build a URL given a team's abbreviation and the 4-digit year.
+        Build the roster URL.
 
         Parameters
         ----------
-        year : string
-            The 4-digit string representing the year to pull the team's roster
-            from.
+        year : str
+            The 4-digit year.
 
         Returns
         -------
-        string
-            Returns a string of the team's season page for the requested team
-            and year.
+        str
+            URL for the team's roster page.
         """
         return ROSTER_URL % (self._team.lower(), year)
 
     def _get_id(self, player):
         """
-        Parse the player ID.
-
-        Given a PyQuery object representing a single player on the team roster,
-        parse the player ID and return it as a string.
+        Parse a player's ID from a roster row.
 
         Parameters
         ----------
-        player : PyQuery object
-            A PyQuery object representing the player information from the
-            roster table.
+        player : BeautifulSoup element
+            A row from the roster table.
 
         Returns
         -------
-        string
-            Returns a string of the player ID.
+        str or None
+            The player's ID.
         """
-        name_tag = player('td[data-stat="player"] a')
-        name = re.sub(r'.*/players/./', '', str(name_tag))
-        return re.sub(r'\.htm.*', '', name)
+        link = player.find('td', {'data-stat': 'player'}).find('a')
+        if not link or not link.get('href'):
+            return None
+        return link['href'].rpartition('/')[1].replace('.htm', '')
 
     def _get_name(self, player):
         """
-        Parse the player's name.
-
-        Given a PyQuery object representing a single player on the team roster,
-        parse the player ID and return it as a string.
+        Parse a player's name from a row.
 
         Parameters
         ----------
-        player : PyQuery object
-            A PyQuery object representing the player information from the
-            roster table.
+        player : BeautifulSoup element
+            A row from the roster table.
 
         Returns
         -------
-        string
-            Returns a string of the player's name.
+        str or None
+            The player's name.
         """
-        name_tag = player('td[data-stat="player"] a')
-        return name_tag.text()
+        link = player.find('td', {'data-stat': 'player'}).find('a')
+        return link.text if link else None
 
-    def _parse_coach(self, page):
+    def _parse_coach(self, soup):
         """
         Parse the team's coach.
 
-        Given a copy of the team's roster page, find and parse the team's
-        coach from the team summary.
-
         Parameters
         ----------
-        page : PyQuery object
-            A PyQuery object representing the team's roster page.
+        soup : BeautifulSoup
+            Parsed HTML of the roster page.
 
         Returns
         -------
-        string
-            Returns a string of the coach's name.
+        str or None
+            The coach's name.
         """
-        for line in page.find('p').items():
-            strong = line.find('strong')
-            if hasattr(strong, 'text') and strong.text().strip() == 'Coach:':
-                return line.find('a').text()
+        for p in soup.find_all('p'):
+            strong = p.find('strong')
+            if strong and strong.text.strip() == 'Coach:':
+                a = p.find('a')
+                return a.text.strip() if a else None
+        return None
 
-    def _find_players_with_coach(self, year):
+    def _find_players(self, year):
         """
-        Find all player IDs for the requested team.
-
-        For the requested team and year (if applicable), pull the roster table
-        and parse the player ID for all players on the roster and create an
-        instance of the Player class for the player. All player instances are
-        added to the 'players' property to get all stats for all players on a
-        team.
+        Fetch and populate the roster.
 
         Parameters
         ----------
-        year : string
-            The 4-digit string representing the year to pull the team's roster
-            from.
-        """
-        if not year:
-            year = utils._find_year_for_season('nfl')
-            # If stats for the requested season do not exist yet (as is the
-            # case right before a new season begins), attempt to pull the
-            # previous year's stats. If it exists, use the previous year
-            # instead.
-            if not utils._url_exists(self._create_url(year)) and \
-               utils._url_exists(self._create_url(str(int(year) - 1))):
-                year = str(int(year) - 1)
-        url = self._create_url(year)
-        page = self._pull_team_page(url)
-        if not page:
-            output = ("Can't pull requested team page. Ensure the following "
-                      "URL exists: %s" % url)
-            raise ValueError(output)
-        for player in page('table#roster tbody tr').items():
-            player_id = self._get_id(player)
-            if self._slim:
-                name = self._get_name(player)
-                self._players[player_id] = name
-            else:
-                player_instance = Player(player_id)
-                self._players.append(player_instance)
+        year : str or None
+            The year to fetch the roster for.
 
-        self._coach = self._parse_coach(page)
+        Raises
+        ------
+        ValueError
+            If the roster page cannot be retrieved.
+        """
+        year = _resolve_year('nfl', year)
+        url = self._create_url(year)
+        soup = _fetch_html(url)
+        if not soup:
+            raise ValueError(f"Cannot retrieve roster for {self._team} in {year}. Check URL: {url}")
+        table = soup.find('table', id='roster')
+        if table:
+            for row in table.find('tbody').find_all('tr', recursive=False):
+                player_id = self._get_id(row)
+                if not player_id:
+                    continue
+                if self._slim:
+                    name = self._get_name(row)
+                    if name:
+                        self._players[player_id] = name
+                else:
+                    self._players.append(Player(player_id))
+        self._coach = self._parse_coach(soup)
 
     @property
     def players(self):
         """
-        Returns a ``list`` of player instances for each player on the requested
-        team's roster if the ``slim`` property is False when calling the Roster
-        class. If the ``slim`` property is True, returns a ``dictionary`` where
-        each key is a string of the player's ID and each value is the player's
-        first and last name as listed on the roster page.
+        Return the roster of players.
+
+        Returns
+        -------
+        list or dict
+            List of Player instances (if slim=False) or dict of IDs to names (if slim=True).
         """
         return self._players
 
     @property
     def coach(self):
         """
-        Returns a ``string`` of the coach's name, such as 'Sean Payton'.
+        Return the coach's name.
+
+        Returns
+        -------
+        str or None
+            Name of the head coach.
         """
         return self._coach

@@ -1,0 +1,12 @@
+chromadb
+fastapi
+langchain
+libcst
+pathspec
+pydantic
+pydantic-settings
+sentence-transformers
+tiktoken
+torch
+transformers
+uvicorn
