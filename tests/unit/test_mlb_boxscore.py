@@ -1,6 +1,6 @@
-from flexmock import flexmock
-from mock import patch, PropertyMock
+from mock import patch, PropertyMock, Mock
 from bs4 import BeautifulSoup
+import requests
 from sportsipy import utils
 from sportsipy.constants import AWAY, HOME
 from sportsipy.mlb.boxscore import Boxscore, Boxscores
@@ -35,26 +35,24 @@ class MockBoxscoreData:
         return [self._fields]
 
 
-def mock_pyquery(url, timeout=None):
-    class MockPQ:
+def mock_requests_get(url, timeout=None):
+    class MockResponse:
         def __init__(self, html_contents):
             self.status_code = 404
-            self.html_contents = html_contents
             self.text = html_contents
+            self.content = html_contents.encode('utf-8') if html_contents else None
             self.url = url
             self.reason = '404'
             self.headers = None
 
-    return MockPQ(None)
+    return MockResponse(None)
 
 
 class TestMLBBoxscore:
-    @patch('requests.get', side_effect=mock_pyquery)
+    @patch('requests.get', side_effect=mock_requests_get)
     def setup_method(self, *args, **kwargs):
-        flexmock(Boxscore) \
-            .should_receive('_parse_game_data') \
-            .and_return(None)
-
+        Boxscore_mock = Mock()
+        Boxscore_mock._parse_game_data.return_value = None
         self.boxscore = Boxscore(None)
 
     def test_away_team_wins(self):
@@ -96,9 +94,8 @@ class TestMLBBoxscore:
     def test_winning_abbr_is_home(self):
         expected_name = 'HOME'
 
-        flexmock(utils) \
-            .should_receive('_parse_abbreviation') \
-            .and_return(expected_name)
+        utils_mock = Mock()
+        utils_mock._parse_abbreviation.return_value = expected_name
 
         fake_winner = PropertyMock(return_value=HOME)
         fake_home_abbr = PropertyMock(return_value=MockName(expected_name))
@@ -110,9 +107,8 @@ class TestMLBBoxscore:
     def test_winning_abbr_is_away(self):
         expected_name = 'AWAY'
 
-        flexmock(utils) \
-            .should_receive('_parse_abbreviation') \
-            .and_return(expected_name)
+        utils_mock = Mock()
+        utils_mock._parse_abbreviation.return_value = expected_name
 
         fake_winner = PropertyMock(return_value=AWAY)
         fake_away_abbr = PropertyMock(return_value=MockName(expected_name))
@@ -144,9 +140,8 @@ class TestMLBBoxscore:
     def test_losing_abbr_is_home(self):
         expected_name = 'HOME'
 
-        flexmock(utils) \
-            .should_receive('_parse_abbreviation') \
-            .and_return(expected_name)
+        utils_mock = Mock()
+        utils_mock._parse_abbreviation.return_value = expected_name
 
         fake_winner = PropertyMock(return_value=AWAY)
         fake_home_abbr = PropertyMock(return_value=MockName(expected_name))
@@ -158,9 +153,8 @@ class TestMLBBoxscore:
     def test_losing_abbr_is_away(self):
         expected_name = 'AWAY'
 
-        flexmock(utils) \
-            .should_receive('_parse_abbreviation') \
-            .and_return(expected_name)
+        utils_mock = Mock()
+        utils_mock._parse_abbreviation.return_value = expected_name
 
         fake_winner = PropertyMock(return_value=HOME)
         fake_away_abbr = PropertyMock(return_value=MockName(expected_name))
@@ -170,8 +164,7 @@ class TestMLBBoxscore:
         assert self.boxscore.losing_abbr == expected_name
 
     def test_game_summary_with_no_scores_returns_none(self):
-        result = Boxscore(None)._parse_summary(BeautifulSoup( , "html.parser")
-            """<table class="linescore nohover stats_table no_freeze">
+        html = """<table class="linescore nohover stats_table no_freeze">
     <tbody>
         <tr>
             <td class="center"></td>
@@ -187,14 +180,15 @@ class TestMLBBoxscore:
         </tr>
     </tbody>
 </table>"""
-        ))
+        soup = BeautifulSoup(html, 'html.parser')
+        result = Boxscore(None)._parse_summary(soup)
 
         assert result == {
             'away': [None],
             'home': [None]
         }
 
-    @patch('requests.get', side_effect=mock_pyquery)
+    @patch('requests.get', side_effect=mock_requests_get)
     def test_invalid_url_returns_none(self, *args, **kwargs):
         result = Boxscore(None)._retrieve_html_page('')
 
@@ -252,7 +246,7 @@ First game of doubleheader
         fields = {
             'attendance': 26340,
             'date': 'Monday, July 9, 2018',
-            'attendance': 26340,
+            'time': None,
             'venue': 'Oriole Park at Camden Yards',
             'duration': '3:13',
             'time_of_day': 'Night'
@@ -338,7 +332,7 @@ Day Game, on grass
 
         assert self.boxscore.time_of_day == NIGHT
 
-    def test_night_game_returns_night(self):
+    def test_day_game_returns_day(self):
         fake_time_of_day = PropertyMock(return_value='day game on grass')
         type(self.boxscore)._time_of_day = fake_time_of_day
 
@@ -346,18 +340,16 @@ Day Game, on grass
 
 
 class TestMLBBoxscores:
-    @patch('requests.get', side_effect=mock_pyquery)
+    @patch('requests.get', side_effect=mock_requests_get)
     def setup_method(self, *args, **kwargs):
-        flexmock(Boxscores) \
-            .should_receive('_find_games') \
-            .and_return(None)
+        Boxscores_mock = Mock()
+        Boxscores_mock._find_games.return_value = None
         self.boxscores = Boxscores(None)
 
     def test_improper_loser_boxscore_format_skips_game(self):
-        flexmock(Boxscores) \
-            .should_receive('_get_team_details') \
-            .and_return((None, None, None, None, None, None))
-        mock_html = pq("""<table class="teams">
+        Boxscores_mock = Mock()
+        Boxscores_mock._get_team_details.return_value = (None, None, None, None, None, None)
+        html = """<table class="teams">
 <tbody>
 <tr class="loser">
     <td class="right">1</td>
@@ -371,16 +363,16 @@ class TestMLBBoxscores:
     </td>
 </tr>
 </tbody>
-</table>""")
-        games = self.boxscores._extract_game_info([mock_html])
+</table>"""
+        soup = BeautifulSoup(html, 'html.parser')
+        games = self.boxscores._extract_game_info([soup])
 
         assert len(games) == 0
 
     def test_improper_winner_boxscore_format_skips_game(self):
-        flexmock(Boxscores) \
-            .should_receive('_get_team_details') \
-            .and_return((None, None, None, None, None, None))
-        mock_html = pq("""<table class="teams">
+        Boxscores_mock = Mock()
+        Boxscores_mock._get_team_details.return_value = (None, None, None, None, None, None)
+        html = """<table class="teams">
 <tbody>
 <tr class="loser">
     <td><a href="/teams/TEX/2017.shtml">Texas Rangers</a></td>
@@ -395,13 +387,14 @@ class TestMLBBoxscores:
     </td>
 </tr>
 </tbody>
-</table>""")
-        games = self.boxscores._extract_game_info([mock_html])
+</table>"""
+        soup = BeautifulSoup(html, 'html.parser')
+        games = self.boxscores._extract_game_info([soup])
 
         assert len(games) == 0
 
     def test_boxscore_with_no_score_returns_none(self):
-        mock_html = pq("""<table class="teams">
+        html = """<table class="teams">
 <tbody>
 <tr class="loser">
     <td><a href="/teams/TEX/2017.shtml">Texas Rangers</a></td>
@@ -415,8 +408,9 @@ class TestMLBBoxscores:
     </td>
 </tr>
 </tbody>
-</table>""")
-        games = self.boxscores._extract_game_info([mock_html])
+</table>"""
+        soup = BeautifulSoup(html, 'html.parser')
+        games = self.boxscores._extract_game_info([soup])
 
         assert games == [
             {

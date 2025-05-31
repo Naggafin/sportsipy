@@ -1,6 +1,7 @@
 from flexmock import flexmock
 from mock import patch, PropertyMock
-from pyquery import PyQuery as pq
+from bs4 import BeautifulSoup
+import requests
 from sportsipy import utils
 from sportsipy.constants import AWAY, HOME
 from sportsipy.nba.boxscore import Boxscore, Boxscores
@@ -33,18 +34,18 @@ class MockBoxscoreData:
         return [self._fields]
 
 
-def mock_pyquery(url, timeout=None):
-    class MockPQ:
+def mock_requests_get(url, timeout=None):
+    class MockResponse:
         def __init__(self, html_contents):
             self.status_code = 404
-            self.html_contents = html_contents
             self.text = html_contents
+            self.content = html_contents.encode('utf-8') if html_contents else None
 
-    return MockPQ('')
+    return MockResponse('')
 
 
 class TestNBABoxscore:
-    @patch('requests.get', side_effect=mock_pyquery)
+    @patch('requests.get', side_effect=mock_requests_get)
     def setup_method(self, *args, **kwargs):
         flexmock(Boxscore) \
             .should_receive('_parse_game_data') \
@@ -256,9 +257,9 @@ class TestNBABoxscore:
         assert isinstance(
             self.boxscore.away_two_point_field_goal_percentage, float)
 
-    def test_home_to_point_field_goals_calc(self):
+    def test_home_two_point_field_goals_calc(self):
         fake_none = PropertyMock(return_value=None)
-        fake_int = PropertyMock(return_vzalue=5)
+        fake_int = PropertyMock(return_value=5)
 
         type(self.boxscore)._home_field_goals = fake_none
         type(self.boxscore)._home_three_point_field_goals = fake_none
@@ -325,8 +326,7 @@ class TestNBABoxscore:
             self.boxscore.home_two_point_field_goal_percentage, float)
 
     def test_game_summary_with_no_scores_returns_none(self):
-        result = Boxscore(None)._parse_summary(BeautifulSoup(
-            """<table id="line_score">
+        html = """<table id="line_score">
     <tbody>
         <tr>
             <td class="center"></td>
@@ -338,14 +338,15 @@ class TestNBABoxscore:
         </tr>
     </tbody>
 </table>"""
-        ))
+        soup = BeautifulSoup(html, 'html.parser')
+        result = Boxscore(None)._parse_summary(soup)
 
         assert result == {
             'away': [None],
             'home': [None]
         }
 
-    @patch('requests.get', side_effect=mock_pyquery)
+    @patch('requests.get', side_effect=mock_requests_get)
     def test_invalid_url_returns_none(self, *args, **kwargs):
         result = Boxscore(None)._retrieve_html_page('')
 
@@ -392,7 +393,7 @@ Logos via Sports Logos.net / About logos"""
 
 
 class TestNBABoxscores:
-    @patch('requests.get', side_effect=mock_pyquery)
+    @patch('requests.get', side_effect=mock_requests_get)
     def setup_method(self, *args, **kwargs):
         flexmock(Boxscores) \
             .should_receive('_find_games') \
@@ -403,7 +404,7 @@ class TestNBABoxscores:
         flexmock(Boxscores) \
             .should_receive('_get_team_details') \
             .and_return((None, None, None, None, None, None))
-        mock_html = pq("""<table class="teams">
+        html = """<table class="teams">
 <tbody>
     <tr class="loser">
             <td class="right">84</td>
@@ -413,12 +414,13 @@ class TestNBABoxscores:
     <tr class="winner">
             <td><a href="/teams/IND/2017.html">Indiana</a></td>
             <td class="right">105</td>
-            <td class="right">&nbsp;
+            <td class="right"> 
             </td>
     </tr>
     </tbody>
-</table>""")
-        games = self.boxscores._extract_game_info([mock_html])
+</table>"""
+        soup = BeautifulSoup(html, 'html.parser')
+        games = self.boxscores._extract_game_info([soup])
 
         assert len(games) == 0
 
@@ -426,7 +428,7 @@ class TestNBABoxscores:
         flexmock(Boxscores) \
             .should_receive('_get_team_details') \
             .and_return((None, None, None, None, None, None))
-        mock_html = pq("""<table class="teams">
+        html = """<table class="teams">
 <tbody>
     <tr class="loser">
             <td><a href="/teams/DET/2017.html">Detroit</a></td>
@@ -437,17 +439,18 @@ class TestNBABoxscores:
     </tr>
     <tr class="winner">
             <td class="right">105</td>
-            <td class="right">&nbsp;
+            <td class="right"> 
             </td>
     </tr>
     </tbody>
-</table>""")
-        games = self.boxscores._extract_game_info([mock_html])
+</table>"""
+        soup = BeautifulSoup(html, 'html.parser')
+        games = self.boxscores._extract_game_info([soup])
 
         assert len(games) == 0
 
     def test_boxscore_with_no_score_returns_none(self):
-        mock_html = BeautifulSoup("""mock_html = pq("""<table class="teams">lt;table class="teams>"", "html.parser")
+        html = """<table class="teams">
 <tbody>
     <tr class="loser">
             <td><a href="/teams/DET/2017.html">Detroit</a></td>
@@ -457,12 +460,13 @@ class TestNBABoxscores:
     </tr>
     <tr class="loser">
             <td><a href="/teams/IND/2017.html">Indiana</a></td>
-            <td class="right">&nbsp;
+            <td class="right"> 
             </td>
     </tr>
     </tbody>
-</table>""")
-        games = self.boxscores._extract_game_info([mock_html])
+</table>"""
+        soup = BeautifulSoup(html, 'html.parser')
+        games = self.boxscores._extract_game_info([soup])
 
         assert games == [
             {
